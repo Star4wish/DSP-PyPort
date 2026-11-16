@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "smoke",
+      "name": "Smoke Test（DSP-PyPort 冒烟内容）",
+      "enabled": true,
+      "dir": "smoke"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "id": 2000,
+    "name_zh": "烟测科技",
+    "name_en": "Smoke Technology",
+    "desc_zh": "冒烟测试科技：解锁烟测配方。",
+    "conclusion_zh": "冒烟测试通过。",
+    "icon_file": null,
+    "icon_source": "Icons/ItemRecipe/iron-ore",
+    "pre_techs": [1001],
+    "matrices": [6001],
+    "matrix_points": [10],
+    "hash_needed": 1000,
+    "unlock_recipes": [4000, 4001],
+    "pos_x": 12,
+    "pos_y": 4
+  }
+]

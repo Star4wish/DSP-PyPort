@@ -1,0 +1,20 @@
+[
+  {
+    "item_id": 6301,
+    "model_id": 800,
+    "recipe_type": 60,
+    "name_zh": "烟测破碎机",
+    "name_en": "Smoke Crusher",
+    "desc_zh": "冒烟测试用的自建建筑：clone_from=assembler（制造台 Mk.I / model 65），配方类型 60。",
+    "icon_file": null,
+    "icon_source": "Icons/ItemRecipe/assembler-1",
+    "clone_from": "assembler",
+    "assembler_speed": 1.0,
+    "work_energy_per_tick": 36000,
+    "idle_energy_per_tick": 1200,
+    "slot_poses": null,
+    "grid_index": 5011,
+    "build_index": 901,
+    "pre_tech": 0
+  }
+]

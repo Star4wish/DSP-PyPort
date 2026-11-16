@@ -1,0 +1,83 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>DSP-PyPort</AssemblyName>
+    <RootNamespace>DSPPyPort</RootNamespace>
+
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <Deterministic>true</Deterministic>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- 游戏目录：命令行 -p:DSPGameDir=... 优先；否则探测本机 Steam 库常见位置 -->
+    <DSPGameDir Condition="'$(DSPGameDir)' == '' AND Exists('C:\Games\Steam\steamapps\common\Dyson Sphere Program\DSPGAME_Data\Managed')">C:\Games\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
+    <DSPGameDir Condition="'$(DSPGameDir)' == '' AND Exists('D:\Steam\steamapps\common\Dyson Sphere Program\DSPGAME_Data\Managed')">D:\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
+    <DSPGameDir Condition="'$(DSPGameDir)' == ''">C:\Games\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
+    <DSPManagedDir>$(DSPGameDir)\DSPGAME_Data\Managed</DSPManagedDir>
+    <DSPBepInExCore>$(DSPGameDir)\BepInEx\core</DSPBepInExCore>
+    <DSPPluginsDir>$(DSPGameDir)\BepInEx\plugins</DSPPluginsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="bin\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.2" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(DSPManagedDir)')">
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(DSPManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(DSPManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(DSPManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(DSPManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(DSPBepInExCore)')">
+    <Reference Include="BepInEx">
+      <HintPath>$(DSPBepInExCore)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(DSPBepInExCore)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(DSPPluginsDir)')">
+    <Reference Include="CommonAPI">
+      <HintPath>$(DSPPluginsDir)\CommonAPI-CommonAPI\CommonAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LDBTool">
+      <HintPath>$(DSPPluginsDir)\xiaoye97-LDBTool\LDBTool.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

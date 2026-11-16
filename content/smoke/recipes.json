@@ -1,0 +1,32 @@
+[
+  {
+    "id": 4000,
+    "key": "PY_RECIPE_smoke_ore",
+    "type": 60,
+    "time_ticks": 120,
+    "inputs": [6300],
+    "in_counts": [2],
+    "outputs": [6300],
+    "out_counts": [3],
+    "desc_zh": "烟测配方：2 烟测矿石 → 3 烟测矿石（仅验证注册链路）。",
+    "tech_id": 2000,
+    "grid_index": 5001,
+    "icon_file": null,
+    "orig": {"time_s": 2.0, "rate_factor": 1.0}
+  },
+  {
+    "id": 4001,
+    "key": "PY_RECIPE_smoke_wide",
+    "type": 60,
+    "time_ticks": 180,
+    "inputs": [1001, 1002, 1003, 1004, 1005, 1006, 6300],
+    "in_counts": [1, 1, 1, 1, 1, 1, 1],
+    "outputs": [6300, 1001, 1002],
+    "out_counts": [5, 2, 2],
+    "desc_zh": "宽配方烟测：7 进 3 出（验证 >6 原料 / >2 产物路径）。",
+    "tech_id": 2000,
+    "grid_index": 5002,
+    "icon_file": null,
+    "orig": {"time_s": 3.0, "rate_factor": 1.0}
+  }
+]

@@ -1,0 +1,44 @@
+[
+  {
+    "id": 6300,
+    "key": "PY_ITEM_smoke_ore",
+    "name_zh": "烟测矿石",
+    "name_en": "Smoke Ore",
+    "desc_zh": "冒烟测试用的矿石（自定义 PNG 图标 6300.png）。",
+    "icon_file": "6300.png",
+    "icon_source": "Icons/ItemRecipe/iron-ore",
+    "stack": 100,
+    "is_fluid": false,
+    "item_type": 1,
+    "is_building": false,
+    "source": "py"
+  },
+  {
+    "id": 6302,
+    "key": "PY_ITEM_smoke_fluid",
+    "name_zh": "烟测液体",
+    "name_en": "Smoke Fluid",
+    "desc_zh": "冒烟测试用的液体物品（IsFluid=true）。",
+    "icon_file": null,
+    "icon_source": "Icons/ItemRecipe/sulphuric-acid",
+    "stack": 200,
+    "is_fluid": true,
+    "item_type": 2,
+    "is_building": false,
+    "source": "py"
+  },
+  {
+    "id": 6301,
+    "key": "PY_ITEM_smoke_crusher",
+    "name_zh": "烟测破碎机",
+    "name_en": "Smoke Crusher",
+    "desc_zh": "冒烟测试用的自建建筑（克隆制造台 Mk.I，自定义配方类型 60）。",
+    "icon_file": null,
+    "icon_source": "Icons/ItemRecipe/assembler-1",
+    "stack": 50,
+    "is_fluid": false,
+    "item_type": 6,
+    "is_building": true,
+    "source": "py"
+  }
+]
