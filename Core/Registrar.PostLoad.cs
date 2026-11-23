@@ -18,6 +18,17 @@ namespace DSPPyPort.Core
             {
                 log.LogError("[PyPort] 收尾回填建筑 prefabDesc 失败：" + ex);
             }
+            Perf.Mark(log, "收尾-建筑 prefabDesc");
+            try
+            {
+                // 队列 2：18 座 PY 建筑绑到 BuildBarTool 第二排，并移出原版建造菜单（BuildIndex=0）。
+                // 必须早于 BBT 在 VFPreloadPostPatch 的 postfix 解析 protoIds。
+                BuildBarIntegration.TryApply(buildings, log);
+            }
+            catch (Exception ex)
+            {
+                log.LogError("[BBT] 第二排快速建造栏集成失败（回退建造菜单自动分配）：" + ex);
+            }
             try
             {
                 ApplyRecipeFlags(true);
@@ -34,6 +45,18 @@ namespace DSPPyPort.Core
             {
                 log.LogError("[PyPort] 收尾补全科技解锁清单失败：" + ex);
             }
+            Perf.Mark(log, "收尾-配方标志/解锁闭环");
+            try
+            {
+                // 科技替换模式：被覆盖的原版 TechProto 需要补跑 Preload/Preload2（CommonAPI 只处理新增 proto），
+                // 并按新的 UnlockRecipes 重算配方 preTech。顺序必须在 AppendRecipeUnlocksToTechs 之后。
+                RebuildReplacedTechs();
+            }
+            catch (Exception ex)
+            {
+                log.LogError("[科技替换] 收尾重建失败（科技树可能显示原版数据）：" + ex);
+            }
+            Perf.Mark(log, "收尾-科技替换重建");
             try
             {
                 ApplyIcons();
@@ -42,6 +65,7 @@ namespace DSPPyPort.Core
             {
                 log.LogError("[图标] 自定义图标应用失败（已隔离，沿用原版图标）：" + ex);
             }
+            Perf.Mark(log, IconLoader.LazyMode && IconLoader.LazyPatchesInstalled ? "收尾-图标（懒加载，仅抽样验证）" : "收尾-图标（批量加载）");
             try
             {
                 // LDBTool.GridIndexBind 在 PreAddProto 时用 CustomGridIndex.cfg 旧值覆盖过 GridIndex，这里写回分配值。
@@ -59,6 +83,41 @@ namespace DSPPyPort.Core
             {
                 log.LogWarning("[PyPort] 自检输出失败（不影响功能）：" + ex.Message);
             }
+            try
+            {
+                CheckModelIdCapacity();
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[验证] 模型 ID 容量自检失败：" + ex.Message);
+            }
+            try
+            {
+                // 配方选择器分页：统计 maxPage（原版只渲染 GridIndex 千位 1/2，本补丁支持任意页）
+                RecipePickerUiFix.LogSummary(log);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[分页] 统计输出失败：" + ex.Message);
+            }
+            try
+            {
+                LogBuildIndexSummary();
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[BuildIndex] 统计输出失败：" + ex.Message);
+            }
+            Perf.Mark(log, "收尾-自检/验证");
+            try
+            {
+                LdbToolBindSkipFix.LogSummary(log);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[Perf] LDBTool 绑定跳过统计输出失败：" + ex.Message);
+            }
+            Perf.Note(log, "onLoadingFinished 收尾完成");
             log.LogInfo("[PyPort] onLoadingFinished 收尾完成（等待 Update 探针在 LDBTool EditDataAction 之后兜底回填）");
         }
 
@@ -69,6 +128,7 @@ namespace DSPPyPort.Core
         /// </summary>
         internal void Tick()
         {
+            TryRepairBuildMenu();
             if (postEditsApplied)
             {
                 return;
@@ -110,6 +170,7 @@ namespace DSPPyPort.Core
                 postEditsApplied = true;
                 log.LogInfo("[PyPort] LDBTool EditDataAction 之后回填完成（Update 探针，建筑 prefabDesc " +
                             applied + "/" + buildings.Count + "）");
+                Perf.Note(log, "Update 探针完成（≈主菜单就绪）：距进程启动 " + Perf.SinceProcessStartMs + " ms");
             }
             catch (Exception ex)
             {
@@ -323,64 +384,17 @@ namespace DSPPyPort.Core
         // ------------------------------------------------------------------ icons
         private void ApplyIcons()
         {
-            List<IconRequest> requests = new List<IconRequest>();
-            List<RecipeProto> followProduct = new List<RecipeProto>();
-
-            for (int i = 0; i < items.Count; i++)
+            if (IconLoader.LazyMode && IconLoader.LazyPatchesInstalled)
             {
-                IconRequest request = BuildIconRequest(IconTargetKind.Item, items[i].Def.IconFile, items[i].Proto, items[i].Def.Id);
-                if (request != null)
-                {
-                    requests.Add(request);
-                }
+                log.LogInfo(string.Format(
+                    "[图标] 懒加载已启用：登记 物品 {0} / 科技 {1} / 配方 {2} 个图标规格；启动阶段不解码 PNG（首次访问 iconSprite 时按需加载）",
+                    IconLoader.ItemSpecCount, IconLoader.TechSpecCount, IconLoader.RecipeSpecCount));
+                IconLoader.VerifyLazy(log);
             }
-            for (int i = 0; i < buildings.Count; i++)
+            else
             {
-                IconRequest request = BuildIconRequest(IconTargetKind.Item, buildings[i].Def.IconFile, buildings[i].Item, buildings[i].Def.ItemId);
-                if (request != null)
-                {
-                    requests.Add(request);
-                }
+                IconLoader.ApplyAllEager();
             }
-            for (int i = 0; i < techs.Count; i++)
-            {
-                IconRequest request = BuildIconRequest(IconTargetKind.Tech, techs[i].Def.IconFile, techs[i].Proto, techs[i].Def.Id);
-                if (request != null)
-                {
-                    requests.Add(request);
-                }
-            }
-            for (int i = 0; i < recipes.Count; i++)
-            {
-                if (!string.IsNullOrEmpty(recipes[i].Def.IconFile))
-                {
-                    IconRequest request = BuildIconRequest(IconTargetKind.Recipe, recipes[i].Def.IconFile, recipes[i].Proto, recipes[i].Def.Id);
-                    if (request != null)
-                    {
-                        requests.Add(request);
-                    }
-                }
-                else
-                {
-                    followProduct.Add(recipes[i].Proto);
-                }
-            }
-
-            IconLoader.ApplyAll(requests, followProduct, contentRoot, log);
-        }
-
-        private static IconRequest BuildIconRequest(IconTargetKind kind, string iconFile, Proto target, int id)
-        {
-            if (string.IsNullOrEmpty(iconFile) || target == null)
-            {
-                return null;
-            }
-            IconRequest request = new IconRequest();
-            request.Kind = kind;
-            request.Target = target;
-            request.FileName = iconFile;
-            request.Id = id;
-            return request;
         }
     }
 }

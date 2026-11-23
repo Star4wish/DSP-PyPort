@@ -42,7 +42,7 @@ namespace DSPPyPort.Core
                         }
                         string key = def.EffectiveKey;
                         string description = string.IsNullOrEmpty(def.DescZh) ? string.Empty : key + "_Desc";
-                        string iconPath = string.IsNullOrEmpty(def.IconFile) ? (def.IconSource ?? string.Empty) : string.Empty;
+                        string iconPath = IconLoader.RecipeIconPath(def.IconFile, def.IconSource);
                         ERecipeType type = (ERecipeType)(byte)def.Type;
                         RecipeProto proto = ProtoRegistry.RegisterRecipe(
                             def.Id,
@@ -75,6 +75,8 @@ namespace DSPPyPort.Core
                             ExpectedId = def.Id,
                             AssignedGridIndex = def.GridIndex
                         });
+                        IconLoader.RegisterRecipe(def.Id, def.IconFile, def.IconSource);
+                        RecipeCategories.Set(def.Id, def.Category);
                         AddRecipeTranslations(def);
                         ok++;
                     }
@@ -115,6 +117,16 @@ namespace DSPPyPort.Core
                     }
                     try
                     {
+                        // 替换模式：占用原版主页科技槽位（ID 1..1999 且注册前已存在）时就地覆盖，
+                        // 不新建 proto —— TechProto.page 只按 ID 判定主页/升级页，新 proto 的 ID 无法 <2000。
+                        if (IsTechSlotToReplace(def.Id))
+                        {
+                            if (ReplaceVanillaTech(def))
+                            {
+                                ok++;
+                            }
+                            continue;
+                        }
                         string key = def.EffectiveKey;
                         Vector2 position = def.HasPosition
                             ? new Vector2(def.PosX, def.PosY)
@@ -144,7 +156,9 @@ namespace DSPPyPort.Core
                         proto.PreTechs = def.PreTechs;
                         proto.PreTechsImplicit = new int[0];
                         techs.Add(new RegisteredTech { Def = def, Proto = proto, ExpectedId = def.Id });
+                        IconLoader.RegisterTech(def.Id, def.IconFile, def.IconSource);
                         AddTechTranslations(def);
+                        newTechCount++;
                         ok++;
                     }
                     catch (Exception ex)
@@ -154,6 +168,8 @@ namespace DSPPyPort.Core
                 }
             }
             log.LogInfo(string.Format("[PyPort] 科技注册：{0}/{1}", ok, tried));
+            HideUnreplacedVanillaMainTechs();
+            LogTechReplacementSummary();
         }
 
         // ------------------------------------------------------------------ localization

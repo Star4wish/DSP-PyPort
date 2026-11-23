@@ -478,6 +478,267 @@ LDB：物品 1632 / 配方 1876 / 科技 566 / 模型 681
 
 ---
 
+## 15. v0.7.0：八包接入 + 建新档崩溃修复 + 启动性能优化（2026-11-18，task-13）
+
+### 15.1 崩溃修复：【必须】SkillSystem..ctor 模型数组越界（用户实测：选星球参数点「开始」即崩）
+
+- **根因链**（反编译确认）：`GameMain.Start → data.NewGame(GameDesc)` → `GameData.NewGame` → `SpaceSector.Init` →
+  `new SkillSystem(sector)`。`SkillSystem..ctor`（full.cs L107961）里有 **10 个数组**：
+  `HpMaxByModelIndex / HpUpgradeByModelIndex / HpRecoverByModelIndex / RoughRadiusByModelIndex /
+  RoughHeightByModelIndex / RoughWidthByModelIndex / BarHeightByModelIndex / BarWidthByModelIndex /
+  ColliderComplexityByModelIndex / EnemySandCountByModelIndex`，全部
+  `new T[LDB.models.dataArray.Length + 64]` 后按 **模型 ID** 下标写入。
+  旧 content 模型 ID 800-817 时：容量 = 664+18+64 = 746 → `IndexOutOfRangeException`。
+- **修复双层**：
+  1. 内容侧把 18 座建筑模型改到 **720–737**（manifest models [720,737]）；
+  2. 引擎 `Core\SkillSystemCtorFix.cs`：Harmony **Prefix 重实现构造函数**（字段全部 public，直接赋值），
+     数组按 `maxModelID + 1` 分配，成功 `return false` 跳过原实现，异常 `return true` 回退；
+     日志 `[兼容] SkillSystem..ctor 第 N 次构造：…最大模型 ID=…原引擎容量=…（越界 … 项）→ 数组扩容到 …`。
+- **启动自检**：`[验证] 模型 ID 容量自检：dataArray.Length=684，最大模型 ID=737，原版容量(len+64)=748 → PASS`。
+- **另外发现并修复的同类原版 bug**：CommonAPI 1.6.7 `OnPostAdd` 模型循环的扩容条件是
+  `if (model.ID > LDB.models.modelArray.Length)`（应为 `>=`），当模型 ID 恰等于长度（初始 728）时不扩容、
+  随后 `modelArray[ID] = model` 越界 → `Error initializing proto data`、`onLoadingFinished` 不触发。
+  引擎在注册完成后、Preload 之前主动把 `LDB.models.modelArray` 扩到 `maxModelID+64`
+  （日志 `已预扩容 LDB.models.modelArray：728 → 801`）。这是 720-737 内容必须的配套修复。
+- **13 处 `Length + 64` 复核结论**：11 处在 SkillSystem（本补丁覆盖）、2 处 `InitPrefabDescArray`（既有补丁覆盖）、
+  1 处 `ModelProtoSet.OnAfterDeserialize` 在插件注册之前执行（此时只有原版模型），无需处理 → 闭环。
+- **端到端验证状态**：patch 已安装且启动期 SkillSystem 构造已被实际接管（日志有“第 1 次构造”）；
+  最终「建新档」仍需用户实机确认一次（本机自动化进新档风险高，未做 debug 钩子）。
+
+### 15.2 启动性能：346s → 56s（八包全量）
+
+| 场景 | 墙钟启动到 `Post loading is complete` | 说明 |
+|---|---:|---|
+| 修复前（八包、LDBTool 冷缓存） | **346 s** | 物品注册 40.8s / 配方 217.9s / 科技 26.2s（LDBTool 逐条写 cfg） |
+| 修复后 冷启动（清空我们的缓存） | **62.4 s** | 与热启动基本相同（不再产生逐条写） |
+| 修复后 热启动（全量 8 包 + 懒加载） | **56–58 s** | 最终数据：进程→Awake 8.3s / 我们 Awake 0.71s / Awake→onLoadingFinished 44.7s |
+| 8 包**全部关闭**（基线） | **52.3 s** | 证明 52s 是本机引擎+其它 MOD 底座；我们的内容只增加 ~4–6s |
+| 懒加载 vs 急切（同内容） | 56.3s vs **60.3s** | 图标阶段：懒加载 **35 ms** vs 批量 **5019 ms**（3642 张 PNG） |
+
+- **LDBTool 绑定的真凶**：`IdBind`/`GridIndexBind` 的 ConfigFile 是 `saveOnConfigSet: true`，每 Bind 一个新 key
+  整文件 Save；八包 ~9663 个 proto × ~1.8MB ≈ 7GB I/O。修复：`Core\LdbToolBindSkipFix.cs` 对
+  `xiaoye97.LDBTool.IdBind/GridIndexBind` 加 Prefix，识别我们的 proto（`Name.StartsWith("PY_")` 或注册前
+  登记的 Model ID）→ `return false` 跳过；其它 MOD 不受影响。日志：
+  `[Perf] 已跳过 LDBTool 配置绑定：IdBind 9682 次 / GridIndexBind 9682 次`。
+  ⚠️ 因此我们的 ID/GridIndex **完全以 content JSON 为准**；不能再依赖 LDBTool 缓存补齐。
+- **图标懒加载（默认开）**：`[Perf] LazyIcons = true`；注册时不加载 PNG（IconPath 传空/无害原版路径），
+  `IconLoader` 把 `ItemProto/TechProto/RecipeProto.iconSprite` getter 加 Harmony Postfix，首次 UI 访问才
+  `Texture2D.LoadImage + Sprite.Create` 并写回 `_iconSprite`；失败回退原版资源。
+  验收日志：`[验证] 懒加载图标：首次 getter 触发加载 7/7 成功 … → PASS`。
+  风险：若有 UI 直接读私有字段 `_iconSprite` 而不走 getter（原版都是只读属性，理论没有），该处会空白；
+  可把 `[Perf] LazyIcons` 改 `false` 回退启动时批量加载。
+- **分包开关**：`BepInEx\config\org.pyport.dsp.cfg` 的 `[Modules] Enable_<moduleId>`（默认跟随 manifest.enabled），
+  关掉不玩的包可减少 JSON 解析/注册/Preload；启动日志打印实际启用模块列表与禁用列表。
+- **分阶段计时**：`[Perf]` 前缀，覆盖「进程启动→Awake / 各注册阶段 / 图标 / Awake→onLoadingFinished /
+  收尾 / Update 探针（≈主菜单就绪）」。注意 `Awake→onLoadingFinished` 这一段是引擎与其它 MOD 的
+  Preload 区间，不是本插件代码（v0.7.0 之前误判为“收尾-建筑 prefabDesc 48s”）。
+
+### 15.3 模型号段与防御（八包实机）
+
+- 最终建筑模型 **720–737**（18 座，type 60→720 … 77→737），最大模型 ID 737 < 容量 748 → PASS。
+- 引擎防御：`ReservedModelIds`（666/667=MolecularHub/PhotonStockExchange，700-708=MechDawn 残留）+
+  CommonAPI 已注册模型检测；若 content 模型段与之冲突，**整段确定性迁移**到第一个空闲连续块并 WARN
+  （本次开发中 666-683 被自动迁到 668-685 验证过）；单条注册冲突还有 try/catch 降级迁移兜底。
+- 教训记录：选模型号段不能只看「原版 1-665」，**必须考虑常见 MOD 硬编码的 666/667/700 段**。
+
+### 15.4 八包规模与最终自检（2026-11-18 00:51）
+
+```
+物品 3175（液体 455，mapped 跳过 17，建筑物品 18）  建筑 18/18  配方 5738（宽配方 1860）  科技 733  本地化 20061
+LDB：物品 3371 / 配方 5902 / 科技 1049 / 模型 684
+缺失 0 / 重复 ID 0（物品/配方/科技/模型）/ ID 被改写 0 / 引用缺失 0 / 自定义类型无建筑 0
+GridIndex 交叉校验：物品格重复 0、物品∩建筑 0、建筑格重复 0 → PASS
+模型容量：dataArray.Length=684，最大模型 ID=737，容量 748 → PASS
+懒加载图标：首次 getter 7/7 成功、缺图 0 → PASS
+```
+
+日志快照：`logs/v072-final-lazy-*.log`（最终懒加载全量）、`logs/v072-final-eager-*.log`（急切对照）、
+`logs/v072-baseline-*.log`（8 包全关基线）、`logs/v07-lazy-*.log`（修复前 346s 纪录）。
+
+
+---
+
+## 16. 崩溃修复「日志自证清单」（task-13，用户实机验证前先看这几行）
+
+启动日志（`BepInEx\LogOutput.log`）应包含以下 5 条，即证明 SkillSystem 崩溃根因已闭环：
+
+1. 补丁安装：
+   `[兼容] 已安装 SkillSystem..ctor 数组扩容补丁（防御模型 ID 越界导致建新档/读档崩溃）`
+2. 每次构造明细（**每次**都会打印，含是否扩容）：
+   `[兼容] SkillSystem..ctor 第 N 次构造（已接管，无异常）：models.dataArray.Length=684，最大模型 ID=737，原引擎容量=748（未越界，无需扩容） → 数组容量 748`
+   - 注：游戏启动引导阶段会先用「只有原版模型」的 LDB 构造一次（dataArray=664 / maxID=665 / 容量 728），
+     这是正常现象；用户点「开始」进新档时会再构造一次（此时 dataArray=684 / maxID=737）。
+3. 模型容量自检 PASS：
+   `[验证] 模型 ID 容量自检：models.dataArray.Length=684，最大模型 ID=737，原版容量(len+64)=748，本 MOD 建筑模型 18 个 → PASS`
+4. CommonAPI off-by-one 兜底：
+   `[兼容] 已预扩容 LDB.models.modelArray：728 → 801（最大模型 ID=737，避开 CommonAPI "ID > Length" 的 off-by-one 越界）`
+5. LDBTool 绑定跳过统计（确认没误伤其它 MOD；只跳过 PY_ 前缀 / 注册前登记的自有 Model ID）：
+   `[Perf] LDBTool 绑定：跳过 本MOD IdBind 9682 / GridIndexBind 9682；放行 其它MOD IdBind N / GridIndexBind N`
+
+如果建新档仍崩，把以上 5 行 + 崩溃堆栈一起发回来（重点看第 2 行是否出现、容量是否 ≥ maxID+1）。
+
+## 17. 启动耗时最终对照（冷/热/基线，task-13，2026-11-18）
+
+测量口径：`BepInEx\LogOutput.log` 出现 `Post loading is complete!` 的墙钟（进程启动到游戏 Preload 完成；
+主菜单可交互一般再晚数秒，且不同机器 UI 初始化时间不同，故用此稳定口径）。游戏独占，每次启动前清空旧日志。
+
+| 场景 | 墙钟到 Preload 完成 | 备注 |
+|---|---:|---|
+| 修复前（八包，LDBTool 冷缓存） | **346 s** | 物品注册 40.8s / 配方 217.9s / 科技 26.2s（LDBTool 逐条整文件 Save） |
+| 修复后 **冷启动**（`build.ps1` 清缓存后第一次） | **57.1 s** | 我们 Awake 0.86s；Awake→onLoadingFinished 46.3s |
+| 修复后 **热启动**（紧接着第二次） | **55.7 s** | 与冷启动基本相同 → 已无逐条写盘成本 |
+| **基线**：插件保留、8 个内容包全关 | **49.9 s** | 本机引擎 + 其它 MOD 底座（含两次 Preload 周期） |
+| 差额 = 本 MOD 八包内容带来的启动成本 | **≈ 5.8–7.2 s** | 主要是 CommonAPI 对多出的 9646 个 proto 的 Preload；< 10s，无需继续优化 |
+| 同内容：懒加载 vs 急切加载（对照） | 56.3 s vs 60.3 s | 图标阶段 35 ms vs 5019 ms（懒加载省约 5s） |
+
+**一句话结论**：启动耗时 修复前 346s → 修复后约 56–57s（其中本 MOD 增加约 6–7s，剩余约 50s 为游戏本体+其它 MOD 的固定开销）。
+
+分阶段（全量冷启动）：
+```
+进程启动→本插件 Awake（Unity/BepInEx/先加载插件）：8935 ms
+本插件 Awake（JSON 解析 710ms + 注册 190ms + 本地化 13ms + 兼容补丁 21ms）：856 ms
+Awake→onLoadingFinished（LDBTool AddProtos + CommonAPI Preload 9646 proto + 其它 MOD）：46349 ms
+收尾（prefabDesc/配方标志/图标/自检）：约 60 ms
+Update 探针（LDBTool EditDataAction 之后回填完成）→ 随后主菜单
+```
+
+配置确认：
+- `[Perf] LazyIcons` 代码默认 **true**（不存在的 cfg 新建时即为 true；发布目录不带 cfg）；
+  启动日志会打印 `图标] 模式=懒加载…` 与 `[图标] 懒加载已启用：登记 物品 …/科技 …/配方 …`；
+- 测试中的 `LazyIcons=false` 对照跑已恢复为 true，最终交付配置为默认值；
+- 分包开关 `[Modules] Enable_<id>` 默认全部 true（跟随 manifest）；全关即得到上表 49.9s 基线。
+
+
+---
+
+## 18. v0.8.0：配方选择器分页 / 沙盒解锁 / 建造菜单 BuildIndex（task-15，2026-11-18）
+
+用户反馈「进沙盒后完全看不到新配方」。注册本身是成功的（LDB 3371 物品/5902 配方/1049 科技），
+是 DSP 原版 UI 的三个硬限制叠加，本轮全部在**引擎侧**修掉（不改 ID）：
+
+### 18.1 配方选择器分页（`Core\RecipePickerPagingFix.cs`）
+
+- **原版限制**：`UIRecipePicker.RefreshIcons()`（full.cs L434470）只把 `GridIndex/1000 == currentType`
+  的配方填进 8×14 槽位，而 `currentType` 只有按钮 1/2 两页（`typeButton1.data=1`/`typeButton2.data=2`）。
+  我们按类型分页后 GridIndex 千位到 **15**（内容侧已把每个类型重排为从第 1 页连续分页，
+  pyalienlife type69 有 15 页），原版 UI 永远只显示前 2 页 → 用户看不到新配方。
+- **修复**：Harmony Prefix 接管 `RefreshIcons`（同样的筛选条件：GridIndex>=1101、RecipeUnlocked、Type 过滤），
+  支持任意 `currentType`；Prefix 接管 `OnTypeButtonClick`：**按钮 1 = 上一页、按钮 2 = 下一页**（边界 clamp）；
+  Postfix `_OnUpdate` 支持**鼠标滚轮**翻页。字段/方法用反射（indexArray/protoArray/filter/currentType/
+  RefreshIcons/OnTypeButtonClick），结构不匹配时 WARN 并回退原实现（只显示 1/2 页）。
+- **日志**：`[分页] 配方选择器分页补丁已安装（…）；maxPage 将在配方加载后打印`；
+  Preload 后打印 `[分页] 配方选择器最大页 maxPage=15；LDB 中 GridIndex>=1101 配方 5902 条，其中 page>2（原版不显示、由本补丁接管）3314 条`。
+- **风险**：强依赖本机 0.10.35.29151 的私有字段/方法名；游戏升级后若改名，日志 WARN + 自动回退（不会崩）。
+
+### 18.2 沙盒模式自动解锁（`Core\SandboxUnlockFix.cs`）
+
+- **原版限制**：`GameHistoryData.SetForNewGame()` 只解锁 `Configs.freeMode.recipes`，沙盒模式只置
+  `GameDesc.isSandboxMode` 标志，**不解除科技/配方锁定** → 新沙盒里 PY 配方全部 `RecipeUnlocked=false`。
+- **修复**：`[Compat] SandboxUnlockPyContent`（默认 true）。Update 里等
+  `GameMain.data != null && gameDesc != null && history != null` 后，若 `isSandboxMode` 为真，
+  对注册时收集的 PY 配方/科技逐个调 `GameMain.history.UnlockRecipe/UnlockTech`，只解锁本 MOD 的 ID；
+  普通模式完全不动（保持科技解锁玩法）。日志：`[Compat] 沙盒模式：已自动解锁 PY 内容 —— 配方 5738/5738 条、科技 733/733 个`。
+- **实测**：2026-11-18 01:26 的验证启动被外部 MOD 自动载入了一个**沙盒存档**，该路径被真实触发并成功解锁
+  5738 配方 / 733 科技；进程随后被终止（未保存，存档文件未改动）。
+
+### 18.3 建造菜单 BuildIndex 自动分配（`Core\Registrar.BuildIndex.cs`）
+
+- **原版限制**：`UIBuildMenu.StaticLoad()`（L383512）按 `page=BuildIndex/100`、`slot=BuildIndex%100` 收录，
+  **只有 slot<=12 才进 protos[16,13]**；且可见分类页实际是 page 1-9（page10/11 是拆除/升级模式按钮）。
+  旧方案 BuildIndex 900..916 → page9 slot0..16：**913-916（4 座）被丢弃**，且 901 与原版建筑撞槽。
+- **修复**：注册前扫描已占用 (page,slot)（原版 LDB + 先加载 MOD 的 CommonAPI items 字典），
+  在 **page1-9 / slot0-12** 的空位里确定性分配（优先级 page2→page1→page3…，用于生产类建筑最靠前）；
+  注册期写入 `ItemProto.BuildIndex`（`UIBuildMenu._OnCreate → StaticLoad` 时自然读到），
+  Update 探针里再反射 `UIBuildMenu.staticLoaded/protos[,]` 校验并修复被覆盖的槽位。
+  配置 `[Compat] AutoBuildIndex`（默认 true，可回退旧行为）。
+- **实测分配表（18 座）**：
+  `p1s0,p1s10,p1s11,p1s12,p2s0,p2s5,p2s6,p2s7,p2s8,p2s9,p2s10,p2s11,p2s12,p3s0,p3s11,p3s12,p4s0,p4s4`
+  （全部 page1-9 / slot0-12 合法）；日志 `[BuildIndex] 建造菜单校验完成：18 座建筑中 18 座槽位正确、修复 0 座`。
+- **风险**：若其它 MOD 在本次启动后注册的建筑占用同槽，Update 探针会检测到并重新分配（日志 WARN 带旧→新槽位）。
+
+### 18.4 验证日志（`logs/v080-task15-20261118-012603.log`，v0.8.0）
+
+```
+[分页] 配方选择器分页补丁已安装（RefreshIcons 接管 + 按钮翻页 + 鼠标滚轮）；maxPage 将在配方加载后打印
+[分页] 配方选择器最大页 maxPage=15；LDB 中 GridIndex>=1101 配方 5902 条，其中 page>2（原版不显示、由本补丁接管）3314 条
+[BuildIndex] 建造菜单槽位占用扫描：原版 LDB 62 个 + 已加载 MOD 1 个（合法范围 page1-9 slot0-12）；自动分配=开
+[BuildIndex] 建筑 BuildIndex 分配（18 座，合法 page1-9 slot0-12）：p1s0,p1s10,…,p4s4
+[BuildIndex] 建造菜单校验完成：18 座建筑中 18 座槽位正确、修复 0 座（page1-9 slot0-12）
+[Compat] 沙盒模式：已自动解锁 PY 内容 —— 配方 5738/5738 条、科技 733/733 个
+注册汇总：物品 3175（液体 455）/ 建筑 18 / 配方 5738（宽配方 1860）/ 科技 733 / 本地化 20061
+无 Error initializing proto data；本插件无 ERROR（仅已知 GridIndex tab6+ 降级 WARN）
+```
+
+**需要用户进沙盒确认的 UI 行为**：
+1. 打开任意自建建筑的配方选择器 → 用左右两个按钮（1=上一页 / 2=下一页）或鼠标滚轮翻页，
+   应能在 1..15 页之间看到对应类型的 PY 配方（每页 8×14 槽，slot 0 起）；
+2. 建造菜单里 18 座 PY 建筑应全部可见（此前 913-916 四座会被原版丢弃）；
+3. 若游戏升级导致 UI 私有结构变化：日志会出现 `[分页] UIRecipePicker 结构不匹配…` 并回退原版行为。
+
+
+---
+
+## 19. v0.9.0：P0 修复（战斗崩溃 + 图标全同）2026-11-19
+
+### 19.1 P0-1 战斗崩溃：`EnemyUnitComponent.RunBehavior_Engage_GRanger` → `lock(skillSystem.fire_lock)` 空引用
+
+- **根因（我方的 bug）**：`SkillSystem` 的 `public readonly object fire_lock = new object();` 与
+  `combat_stat_rw_lock = new object();` 是**字段初始化器**（编译进原构造函数）。v0.8 之前
+  `SkillSystemCtorFix` 用 Prefix `return false` 完全跳过原构造函数（为了绕过模型 ID 越界），
+  两个锁字段没有初始化 → null → 敌人开火 `lock(null)` 抛 `ArgumentNullException`。
+- **修复（A + 运行时兜底）**：
+  1. `[Compat] FixSkillSystemCtor` **默认改为 false**（当前模型 ID 720-737 < 容量 748，原构造函数安全），
+     新装用户不再安装接管补丁；
+  2. 即使旧 cfg 仍为 true（升级用户），Prefix 也会**先检查容量**：`maxID+1 <= dataArray.Length+64`
+     → 记录日志并 `return true` **执行原构造函数**（保留全部字段初始化器，含两个锁）；只有真正会越界才接管，
+     接管路径会用反射补建 `fire_lock / combat_stat_rw_lock`；
+  3. `Plugin.Update` 每帧做一次运行时兜底：拿到 `GameMain.data.spaceSector.skillSystem` 后检查两个锁，
+     为 null 立即补 `new object()` 并 WARN（防其它 MOD 的同类补丁）。
+- **日志自证**：
+  ```
+  [兼容] SkillSystem..ctor 检测：最大模型 ID=665 <= 原版容量=728，使用原构造函数（保留 fire_lock / combat_stat_rw_lock 等字段初始化器）
+  [验证] 模型 ID 容量自检：dataArray.Length=684，最大模型 ID=737，容量 748 → PASS
+  （整份启动日志 ArgumentNullException 计数 = 0）
+  ```
+
+### 19.2 P0-2 图标全显示成铁矿：原版 IconSet 图集索引语义确诊与修复
+
+- **语义（反编译 `full.cs` L295865 `IconSet` / L349733 `GameMain.CreateIconSet` 确认）**：
+  - 图标索引就是**图集格子号**：`itemIconIndex[id] / recipeIconIndex[id] / techIconIndex[id]`（uint）；
+  - 图集固定 **2000×2000、25×25=625 格、每格 80×80**；`0` = 无图标（采样第 0 格）；
+  - `IconSet.Create()` 在 `GameMain.Start()` 里执行：遍历 LDB proto，取 `proto.iconSprite.texture`
+    `Graphics.CopyTexture` 到格子；相同 Sprite 复用同一格；格子用尽（>=625）时 `Debug.LogWarning("图标图集空间不足！")`
+    并把后续索引置 0；
+  - `UIRecipePicker/UIItemPicker` 用 `iconSet.xxIconIndex[id]` + `iconSet.texture` 采样（ComputeBuffer），
+    所以索引为 0 时全部显示同一格 → 用户看到的「全是铁矿图标」。
+  - 注意时序：`CreateIconSet` 可能发生在 **mods 并入 LDB 之前**（菜单 demo 的 GameMain.Start；
+    实测日志：Create → 之后才 LDBTool Pre Loading）→ 若只在 Create 时注入，我们的 proto 还不在 LDB。
+- **选定方案：引擎侧图集注入（不需要 content 改任何格式/图标）**：
+  1. Prefix：Create 期间抑制懒加载并清空我们的 proto `_iconSprite`，避免 9664 个图标挤爆 625 格
+     （否则连原版图标索引都会被挤掉）；
+  2. Create 后如 LDB 里还没有我们的物品 → **推迟注入**；`Update` 探针等 LDB 完整后再注入；
+  3. 注入：统计图集已用格/空闲格；把 content/icons PNG 按「使用次数优先」确定性映射到空闲格，
+     `SetPixels32` 缩放成 80×80 写入图集，随后重写三个索引数组 + `SetData` 到对应 ComputeBuffer，
+     再 `texture.Apply(true)`；无自定义图标的配方跟随产物物品的格；无文件对象回退到代表性格（非 0）。
+- **实测（`logs/v090-p0-20261119-010707.log`）**：
+  ```
+  [图标图集] 图集现状：已用格 560/625，空闲格 64（原版/其它 MOD 图标保留）
+  [图标图集] 注入完成：distinct 图标文件 3642 个 → 独立占用 64 格、复用 3578 个（空闲格 64）
+  [图标图集] 索引复核：物品 3193/3193、科技 733/733、配方 5738/5738 的图集索引 > 0
+  ```
+  → 选择器里不再是同一张图，而是 **64 种不同 PY 图标**（按使用次数分布；物品/科技/配方全部非 0 索引）。
+- **容量限制（需要内容侧决策）**：图集 625 格被原版+其它 MOD 占用后只剩 **64 个空闲格**，
+  而我们有 3642 个不同图标文件，无法 1:1。若要求「每个物品图标准确」，需要内容侧把图标合并到
+  **<= 空闲格数（实测 64）** 个代表性图标（按 category 归类），引擎会自动按新图标集合 1:1 映射；
+  若接受「不同物品可共用近似图标」，当前方案已可用（不再全部同一张）。
+  后续如确认可研究扩大图集（需要反编译 UI shader 的 UV/格子常量，风险较高，本轮未做）。
+- **配置**：`[Compat] FixIconAtlas`（默认 true；关闭回退原版行为=全同一张）。
+- **顺带确认**：物品选择器/建造栏/物流/垃圾桶等使用同一 `GameMain.iconSet` 索引的 UI 都会一并变正常
+  （索引已重写在同一张图集上）；使用 Sprite 的 UI（如物品 tooltip）仍走懒加载 PNG，保持 PY 原画。
+
+
+---
+
 ## 15. v0.7.0：第 7 包 pyalternativeenergy（替代能源）+ 2 座新建筑（2026-11-17）
 
 ### 15.1 七包规模
@@ -591,3 +852,201 @@ type 77 可见 956 条，CanBuild=True
 3. 0 原料配方累计 15 条、627 条概率产物已确定性化、4 条零产物配方被跳过 —— 均记录在 _skipped.json；
 4. 建筑外观为克隆原版机器，PY 专属外观需 Unity AssetBundle（未做）；
 5. 未做进存档级人工试玩验证（避免动存档），建议首次进档按「原矿→煤处理→冶炼」主线跑一条链。
+
+
+---
+
+## 18. v0.7.2 修复版：建新档崩溃 + 启动极慢（2026-11-18，用户实测反馈）
+
+### 18.1 崩溃根因与修复
+- 用户报「选完星球参数正式进入时崩」IndexOutOfRangeException in SkillSystem..ctor；
+- 根因：SkillSystem..ctor（及 SpaceSector/PlanetFactory.InitPrefabDescArray）共 13 处 
+ew T[LDB.models.dataArray.Length + 64] 却按**模型 ID 下标**写入；原版模型 664，我们 18 座建筑用 800–817 → 容量 748 装不下 → 越界；
+- 修复（双层）：
+  1. **建筑模型 ID 800–817 → 720–737**（避开原版 1–665、MolecularHub 666、PhotonStockExchange 667、MechDawn 残留 700–708）；
+  2. SkillSystem..ctor Harmony Prefix 重实现（数组按 maxModelID+1 分配），日志自证每次构造；
+  3. 顺带修掉 **CommonAPI 1.6.7 的 off-by-one**（if (model.ID > LDB.models.modelArray.Length) 应为 ≥，模型 ID=728 时必崩）→ 注册后主动预扩容 modelArray 728 → 801；
+- 启动自检：dataArray.Length=684，最大模型 ID=737，原版容量=748 → PASS。
+
+### 18.2 启动极慢根因与修复（346s → 56s）
+- 真凶**不是**资源/图标加载，而是 **LDBTool 的 ID 配置缓存**：IdBind/GridIndexBind 对每个新 proto 调 ConfigFile.Bind，而该文件 saveOnConfigSet=true → **每注册 1 个 proto 就重写整份配置**；八包 9663 个 proto × (720KB+1.06MB) ≈ 7GB 磁盘写入 = 346s；
+- 修复：Harmony Prefix 跳过**本 MOD proto** 的 LDBTool 绑定（PY_ 前缀 + 自有 Model ID；其它 MOD 放行 4/4），我们的 ID/格位以 content JSON 为准；
+- 图标懒加载（默认开）：ItemProto/TechProto/RecipeProto.iconSprite getter Postfix，首次访问才解码 PNG → 图标阶段 5019ms → **35ms**；
+- 结果：**启动 346s → 冷 57.1s / 热 55.7s**；8 包全关基线 49.9s → **本 MOD 内容净增仅 ≈5.8–7.2s**，其余为游戏本体+其它 MOD 固定开销。
+- 分阶段（全量冷启动）：进程→Awake 8.9s / 本 MOD Awake **0.86s**（JSON 710ms + 注册 190ms）/ Awake→onLoadingFinished 46.3s / 收尾 60ms。
+
+### 18.3 新增能力
+- [Modules] Enable_<包名> 分包开关（默认跟随 manifest），关掉不玩的包可降启动时间；
+- [Perf] LazyIcons（默认 true，异常可回退 false）；
+- [Compat] FixSkillSystemCtor / SkipLdbToolBind / FixPrefabDescArray 三个兼容开关；
+- 分阶段 [Perf] 计时日志。
+
+### 18.4 最终验证（2026-11-18 01:08，八包全开）
+`
+物品注册 3175/3175（液体 455）+ 建筑 18/18    配方 5738/5738（宽配方 1860）    科技 733/733
+LDB：物品 3371 / 配方 5902 / 科技 1049 / 模型 684      重复 ID 0 / 缺失 0 / 引用缺失 0
+懒加载图标：首次 getter 7/7 成功 PASS        模型容量自检 PASS（684/737/748）      Awake 554ms
+`
+
+### 18.5 仍需用户实机确认
+1. 新建游戏/读档不再崩溃（日志应出现 SkillSystem..ctor 第 2 次构造（已接管，无异常））；
+2. 懒加载图标在建造栏/科技树/物品栏显示正常（异常则 cfg 设 LazyIcons=false 重启）；
+3. 若某些 MOD 组合仍有冲突，看日志 [冲突检查] 与 [自检] 段。
+
+
+---
+
+## 20. v0.9.1：18 座 PY 建筑移入 BuildBarTool 第二排（队列 2，2026-11-19，已实机验收）
+
+### 20.1 行为
+- 18 座 PY 建筑不再占原版建造菜单：绑定成功即 `ItemProto.BuildIndex = 0`；**不动原版建筑**的任何 BuildIndex。
+- 分配表（确定性）：recipe type **60–67 → BBT category 5 slot 1–8**；**68–77 → category 8 slot 1–10**（内容实测 18 个 type 各 1 座）。
+- 时序依据（BBT 反编译）：`BuildBarTool.SetBuildBar(category,index,itemId,isTopRow:true)` 只写静态 `protoIds[,]`，
+  真正解析发生在 `VFPreload_Patch.VFPreloadPostPatch` 的 HarmonyPostfix；我们在 CommonAPI `onLoadingFinished` 调用，
+  早于该 postfix，因此绑定一定被 BBT 读到。
+- 回退：未安装 BuildBarTool / 版本不匹配 / 单个 slot 被其它 MOD 占用 → 逐条 WARN，该建筑保留建造菜单槽位
+  （走原 `[Compat] AutoBuildIndex` 自动分配）；已绑定成功时跳过 `TryRepairBuildMenu`，避免把 BuildIndex 又写回去。
+- 配置：`[Compat] UseBuildBarToolTier2`（默认 true）。
+
+### 20.2 实机验证（`logs/v091-bbt-20261119-011613.log`，wall 57.5s，仅杀自己的 PID+sidecar）
+```
+[Info] [BBT] 已找到 BuildBarTool v1.0.4 → 18 座 PY 建筑将绑定到第二排快速建造栏
+[Info] [BBT] 第二排快速建造栏绑定完成：18/18 座（失败 0）；分配表：t60→cat5/s1(item 6913, BuildIndex=0)、
+       t61→cat5/s2(item 6914, BuildIndex=0) … t67→cat5/s8(item 6920, BuildIndex=0)、
+       t68→cat8/s1(item 7709, BuildIndex=0) … t77→cat8/s10(item 8436, BuildIndex=0)
+```
+连带 P0 回归：`ArgumentNullException = 0`、`Error initializing proto data = 0`、
+`[图标图集] 索引复核：物品 3193/3193、科技 733/733、配方 5738/5738 的图集索引 > 0`。
+
+### 20.3 回退方式
+cfg 设 `[Compat] UseBuildBarToolTier2 = false` 重启即可回到「建造菜单自动分配槽位」。
+
+
+## 21. v0.10.0：配方选择器 UI 重做（队列 3 / task-18，2026-11-19，已实现，待游戏内验收）
+
+### 21.1 原版问题
+- `UIRecipePicker` 固定 14 列 × 8 行 = 112 格；`RefreshIcons()` 只在 `GridIndex/1000 == currentType` 时渲染，
+  `currentType` 只有 1/2 两个按钮 → 我们按类型分页到 15 页的配方看不到；
+- 图标走 `GameMain.iconSet` 共享图集（625 格，原版+其它 MOD 后只剩 64 空闲格）→ 只能是近似图标。
+
+### 21.2 方案（只改引擎，不动 content 格式/ID）
+- **Sprite 直出图标**：112 个独立 `UI.Image`，每格 `sprite = proto.iconSprite`（懒加载 → PY 图标 1:1 精确）；
+  原版图集 `RawImage` 置全透明但保留其 EventTrigger → 原版悬停提示 / 点击选择 / 高亮框全部继续走原路径；
+  `GridIndex` 语义完全保留（仅作为排序与分页切片依据）。
+- **分类页签**：filter ≠ None（建筑选择器，实测唯一调用方 `UIAssemblerWindow` 总是传建筑配方类型）时，
+  按 PY 配方大类分组：content JSON 的 `category`（171 种）归并为 **8 组**（采掘/冶炼/化工/组装/生物/能源/科研/其它）
+  + 「全部」；filter = None 时按 recipe type 合并 7 组。页签带带 `RectMask2D`，可滚轮横向滚动，替换原版 1/2 按钮。
+  说明：跨 20 个 recipe type 的全局页签会让建筑选到不兼容类型配方（存档风险），故不做进建筑选择器；
+  如后续需要，另做只读全局配方浏览器入口。
+- **滚动条 + 页码**：右侧纵向滚动条（拖拽/点击跳页，替代按钮翻页）；页码文本「第 X/Y 页 · N 条 · 大类」；
+  配方区鼠标滚轮翻页。
+- **零内容改动**：引擎新增读取 content/recipes.json 已有的 `category` 字段（`RecipeDef.Category` + `RecipeCategories` 注册表），
+  不写回 JSON、不改任何 ID。
+- 配置：`[UI] EnableRecipePickerUi`（默认 true；关闭回退原版行为）。
+
+### 21.3 启动自证（`logs/v092-pickerui-20261119-012556.log`）
+```
+[Info] [选择器UI] 配方选择器 UI 补丁已安装（Sprite 直出图标 + 分类页签 + 纵向滚动条 + 页码；配置 [UI] EnableRecipePickerUi 可关闭）
+[Info] [选择器UI] 已创建：112 个 Sprite 直出格位 + 页签带 + 滚动条 + 页码（iconImage 644x368）
+```
+→ 112 格布局尺寸与 14×46 / 8×46 预期一致，创建/挂载无异常。
+
+### 21.4 当前阻断（2026-11-19，属 task-17 过渡态，非本功能缺陷）
+- 内容侧已切到 task-17 的科技 ID 段 `1..1999`，而引擎仍是旧冲突策略 →
+  本次启动 `[冲突检查] 科技冲突 … 本次拒绝注册全部内容模块`，8 个模块 items/recipes/techs 全部为 0，
+  选择器里没有任何 PY 配方可验证；
+- 菜单态 `UIRoot.instance.uiGame` 不存在，`UIRecipePicker` 不初始化 → 纯主菜单冒烟无法验证渲染/页签；
+  **验收方式：进入沙盒/存档后打开一座 PY 建筑的配方选择器**，日志应出现
+  `[选择器UI] 打开：filter=…（按配方大类），页签 N 个，配方 … 条 / … 页`，点页签有 `[选择器UI] 页签切换：…`；
+- 待 tech-dev 的 task-17 引擎规格/实现落地后一起验收。
+
+### 21.5 调试自测（不面向用户）
+环境变量 `DSPPYPORT_PICKER_SELFTEST=1`：游戏内 uiGame 就绪后自动打开一次 filter=60 选择器，
+打印快照（页签数/页数/sprites 数/distinctSpriteIds/前 10 格 recipeId→sprite.name#id/页签带与滚动条坐标尺寸），
+再自动关闭；默认不生效。主菜单态无 uiGame 时会 60s 后超时跳过（本次即如此）。
+
+
+## 22. v0.9.3：科技替换模式（PY 科技占用原版主页 ID）+ MechDawn 兼容修复（2026-11-24）
+
+### 22.1 背景：为什么必须「替换」而不是「新增」
+- DSP 反编译事实：`TechProto.page => ID >= 2000 ? 1 : 0`（硬编码，不可配置）。
+  科技树主页只画 page 0；ID ≥ 2000 的科技一律进「升级」页。
+- 内容侧（task-17）已把 733 条 PY 科技重排到 **1..1999**：其中 **103 条占用原版主页科技 ID**、
+  630 条落在空洞 ID（2-631 等）；保留 6 条原版主页科技 [1508, 1509, 1901, 1902, 1903, 1904]。
+- 旧引擎的冲突检查遇到这 103 条会「拒绝注册全部内容模块」。本版实现**原位替换**：
+  不新建 TechProto，直接改写 `LDB.techs` 里已有的原版 TechProto 字段（引擎里 ID<2000 才有主页）。
+
+### 22.2 引擎实现（`Core/Registrar.TechReplace.cs` + 4 处小改）
+| 位置 | 行为 |
+|---|---|
+| `Registrar.TechReplaceMode`（`[Compat] TechReplaceMode`，默认 true） | 总开关；关闭则沿用旧冲突拒绝策略 |
+| `FilterTechSlotsToReplace()` + 冲突扫描 | 计划 ID 中「注册前已存在且 ≤1999」的科技槽位放行，其余 ID 仍按冲突拒绝（不会掩盖真冲突） |
+| `MarkTechId()` | 占位槽位放行；重复注册仍拒绝 |
+| `ReplaceVanillaTech()` | 覆盖 Name/Desc/Conclusion/IconPath/PreTechs/Items/ItemPoints/HashNeeded/UnlockRecipes/Position/Level/MaxLevel/Published/IsObsolete/IsLabTech/IsHiddenTech，清空原版升级科技残留（PreItem/UnlockFunctions/UnlockValues/PropertyOverride*/AddItems*），注册图标与本地化 |
+| `HideUnreplacedVanillaMainTechs()` | 注册前存在、未被 PY 覆盖、也不在保留清单的 ID<2000 科技 → `IsObsolete=true`（本次实际 0 条，说明 109 条原版主页科技全部有归属） |
+| `RebuildReplacedTechs()`（onLoadingFinished） | 被覆盖的 proto 不会被 CommonAPI `OnPostAdd` 重建 → 手动补跑 `Preload()` + `Preload2()`（preTechArray/postTechArray/unlockRecipeArray/itemArray/unlockNeedItemArray），并 `RecipeProto.FindPreTech()` 重算 6048 条配方 preTech |
+| `SandboxUnlockFix` | 沙盒解锁清单改为「630 新增 + 103 替换」= 733/733（此前漏了替换科技） |
+| `VerifyTechTree()` | 运行时自检：主页节点数、名称翻译、Preload2 数组一致性、坐标、重名、解锁需求 |
+
+### 22.3 实机自证（2026-11-24，`BepInEx/LogOutput.log`）
+```
+[冲突检查] 科技替换模式：计划占用原版主页槽位 103 条（冲突检查已放行）
+[冲突检查] 计划 ID 与已有 proto 无冲突，继续注册
+[科技替换] 原版主页槽位 1001（T电磁学）→ PY 科技「石英矿处理 MK1」
+…（103 条）
+[科技替换] 原版主页科技已全部被 PY 科技覆盖或保留，无需隐藏残留
+[科技替换] 模式开启：原版主页槽位替换 103 条 / 新增科技 630 条 / 保留原版主页科技 6 条 / 隐藏残留 0 条
+科技注册：733/733
+[科技替换] 重建完成：替换科技 103/103（失败 0）/ 新增科技 630 / 隐藏原版主页科技 0 / 配方 preTech 重算 6048 条
+[科技树自检] page0（主页）科技 781 条 = PY 733 + 其它 MOD/保留原版 48；失效/隐藏 6；名称未翻译 0；
+  preTechArray 不一致 0；unlockRecipeArray 不一致 0；itemArray 不一致 0；解锁需求为空 8；无前置 45；坐标异常 0；主页重名 0
+[Compat] 沙盒模式：已自动解锁 PY 内容 —— 配方 5738/5738 条、科技 733/733 个
+```
+说明：page0 781 = PY 733 + 原版保留 6 + 其它 MOD（MechDawn/MolecularHub 等）ID<2000 的主页科技 42。
+「解锁需求为空 8 / 无前置 45」为内容设计属性（早期廉价科技 hash×points/3600 取整为 0；PY 存在多根节点），非异常。
+
+### 22.4 【重要】MechDawn 配方 ID 冲突修复（内容侧 + 生成器）
+- 现象：本版首次启动后 `DSP-MechDawn` 的 198 条配方注册失败：
+  `注册配方 46001 失败：An item with the same key has already been added. Key: 8001`；
+  `ModFixerOne: Duplicate RecipeId:8001 Name:MechDawn_Recipe_46001_Name`；
+  `UXAssist: GameEvent 'OnDataLoaded' handler failed … Key: 8001`（生产目录 ToDictionary 崩溃）。
+- 根因：MechDawn 把文档配方 46000–46999 映射到运行期 **8001–8999**（`MechDawnConst.RuntimeRecipeIdBase=8000`），
+  而 PY 生成器 `pyalternativeenergy.recipes = (7600, 8199)` 主段尾部 **8001–8199 与 MechDawn 8001–8213 重叠**。
+  旧自检只校验「溢出段」避开 8001–8213，漏了主段 → 198 条 PY 配方占用了 MechDawn 号段，后注册方失败。
+- 内容修复（`tools/convert_py2dsp.py`）：
+  1. `pyalternativeenergy.recipes` 主段 **7600-8199 → 7600-7999**；`declared_recipes` → (4000, 11999)；
+     `recipe_overflow_ranges` → [(8214, 8259), (11400, 11999)]。
+  2. `Allocator` 复用旧 id-map 时接受「回填/溢出段」内的旧值（否则重排会让原有溢出 ID 漂移）。
+  3. 新增一次性基线迁移 `migrate_baseline_recipes()`：把基线里回收块 8000–8199 的 199 条旧 ID 迁到新 ID，
+     `recipes_legacy` 保留旧快照（与 task-17 的 techs 迁移同款做法）。
+  4. 自检新增两条断言：每个包**主段**与 MechDawn 8001-8213 交集必须为 0；全部配方 ID 与 8001-8213 交集必须为 0。
+- 重排结果：`pyalternativeenergy` 645 条配方 = 7600–7999（400）+ 8259（1）+ **11400–11598（199）**；
+  其它包 ID 不变；`_selfcheck-global.txt` PASS（既有包 ID 漂移 0）；只改了 14 个内容文件（p7 配方/id-map、
+  6 个包的 techs.json 解锁边、locale/manifest/基线/自检）。
+- 修复后实机：`Mechanical Dawn 配方注册完成：新增 146/146，原版编辑 12/12`；`Duplicate RecipeId = 0`；
+  `UXAssist OnDataLoaded 异常 = 0`；我方 `配方注册：5738/5738`、`科技注册：733/733`。
+
+### 22.5 启动耗时实测（v0.9.3）
+- 正常条件：进程启动→主菜单 **64–67 s**（崩溃前基线 56–70 s；本 MOD Awake 1.2–1.3 s，其余为游戏本体+其它 MOD）。
+- 曾观测到 296–500 s 的异常：发生在「另一款 3D 游戏在前台占满 GPU/CPU」或「启动同时读档生成星球」时，
+  与内容/代码无关；独占启动复测即恢复 64 s 级。归因工具：`Core/TimelineProbe.cs`
+  （环境变量 `DSPPYPORT_TIMELINE=1` 时打点 VFPreload/LDBTool.AddProtos/CommonAPI.OnPostAdd/IconSet.Create/
+  ItemProto.Init*/UXAssist 目录重建；实测 VFPreload 总耗时 ≈54.6s）。
+
+### 22.6 用户验收清单（进游戏后逐项看）
+1. **科技树主页**：应为 PY 科技树（781 个节点 = PY 733 + 其它 MOD 42 + 原版保留 6），不再只有原版 109 个；
+   PY 科技全部是中文名/图标，前置连线完整，不再跑到「升级」页。
+2. **升级页**：原版 206 条升级科技仍在（未被隐藏/未改 ID）。
+3. **配方选择器**：打开任一座 PY 建筑 → 配方页应有「全部/采掘/冶炼/化工/组装/生物/能源/科研/其它」页签、
+   右侧滚动条、页码「第 X/Y 页」；图标为 PY 专属图标（Sprite 直出，不再全是铁矿）。
+4. **快速建造栏**：BuildBarTool 第二排 category5/8 共 18 座 PY 建筑。
+5. **建新档/进档**：不再出现 `ArgumentNullException`；沙盒模式配方/科技全解锁（733/733）。
+
+### 22.7 存档兼容与回滚
+- **科技 ID 语义已变**：旧存档的科技进度按 ID 对应到不同科技（items/recipes/building ID 未变），
+  强烈建议新档；旧档仍可进，但科技树进度会错乱（`GameHistoryData.techStates` 是 Dictionary，不会崩溃）。
+- 回滚：cfg `[Compat] TechReplaceMode = false` 会回到「科技冲突拒绝注册」态（内容不可用）；
+  `[Compat] SandboxUnlockPyContent`、`[UI] EnableRecipePickerUi`、`[Compat] UseBuildBarToolTier2` 均可单独关。
+- 内容回滚：`_analysis/py-port/_backup-content-20261123-232748/`（改动前完整 3876 文件）。
+
+

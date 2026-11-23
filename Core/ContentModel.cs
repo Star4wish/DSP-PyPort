@@ -82,6 +82,7 @@ namespace DSPPyPort.Core
         internal int GridIndex;        // 0/非法 = 自动补齐到 >=1101
         internal string IconFile;
         internal string IconSource;
+        internal string Category;      // PY 原始配方大类（content JSON category 字段，仅 UI 分组用，不注册进游戏）
         internal bool Handcraft;
         internal string ModuleId;
         internal bool Skip;

@@ -371,8 +371,45 @@ namespace DSPPyPort.Core
             return builder.ToString();
         }
 
-        // ================================================================== duplicate id scan
+        // ================================================================== model id capacity self-check
         /// <summary>
+        /// 模型 ID 容量自检（崩溃根因证明，task-13）：
+        /// 原版若干处 `new T[LDB.models.dataArray.Length + 64]` 后按**模型 ID** 下标写入
+        /// （SkillSystem..ctor 10 个数组 / PrefabDescByModelIndex 2 处）。
+        /// 只要 maxModelID + 1 &lt;= dataArray.Length + 64，就不会越界；否则 WARN 并提示会崩溃。
+        /// 本插件已用 SkillSystemCtorFix / PrefabDescArrayFix 兜底，但内容侧应保持在安全余量内。
+        /// </summary>
+        private void CheckModelIdCapacity()
+        {
+            if (LDB.models == null || LDB.models.dataArray == null)
+            {
+                return;
+            }
+            ModelProto[] dataArray = LDB.models.dataArray;
+            int maxId = 0;
+            for (int i = 0; i < dataArray.Length; i++)
+            {
+                ModelProto proto = dataArray[i];
+                if (proto != null && proto.ID > maxId)
+                {
+                    maxId = proto.ID;
+                }
+            }
+            int capacity = dataArray.Length + 64;
+            bool pass = maxId + 1 <= capacity;
+            log.LogInfo(string.Format(
+                "[验证] 模型 ID 容量自检：models.dataArray.Length={0}，最大模型 ID={1}，原版容量(len+64)={2}，" +
+                "本 MOD 建筑模型 {3} 个 → {4}（SkillSystem..ctor / PrefabDescByModelIndex 按 ID 写数组，maxID+1 必须 <= 容量）",
+                dataArray.Length, maxId, capacity, buildings.Count, pass ? "PASS" : "WARN"));
+            if (!pass)
+            {
+                log.LogWarning("[验证] 模型 ID 超出原版容量 " + (maxId + 1 - capacity) +
+                               " 项：已由 SkillSystemCtorFix/PrefabDescArrayFix 兜底，但若补丁失效会建新档/读档崩溃；" +
+                               "建议内容侧把建筑模型 ID 降到安全段（如 666-683）");
+            }
+        }
+
+        // ================================================================== duplicate id scan        /// <summary>
         /// LDB 数组重复 ID 扫描：其它 MOD（如 UXAssist 的 ProductionCatalog）会用 ToDictionary(ID) 建索引，
         /// LDB 里若出现重复 ID 会让它们的 UI 初始化抛 ArgumentException。这里只报错不改数据。
         /// 注册前扫描只能看到 vanilla，已加载 MOD 的 proto 要到 Preload 才并入 LDB，所以必须再做这一次兜底。

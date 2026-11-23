@@ -84,6 +84,7 @@ namespace DSPPyPort.Core
                 }
                 registeredItemIdList.Add(def.Id);
                 items.Add(new RegisteredItem { Def = def, Proto = proto, ExpectedId = def.Id });
+                IconLoader.RegisterItem(def.Id, def.IconFile, def.IconSource, def.IsFluid);
                 AddItemTranslations(def);
                 return proto;
             }
@@ -97,6 +98,7 @@ namespace DSPPyPort.Core
         // ------------------------------------------------------------------ buildings
         private void RegisterBuildings()
         {
+            EnsureSafeBuildingModelIds();
             int ok = 0;
             int tried = 0;
             int autoModel = 0;
@@ -145,7 +147,38 @@ namespace DSPPyPort.Core
                             continue;
                         }
 
-                        ModelProto model = ProtoRegistry.RegisterModel(def.ModelId, sourceModel.PrefabPath);
+                        ModelProto model = null;
+                        try
+                        {
+                            // 注册前登记模型 ID：LDBTool.RegisterModel 内部会立刻 PreAddProto→IdBind，
+                            // 跳过绑定补丁需要在 Bind 发生之前知道这是我们的模型。
+                            LdbToolBindSkipFix.MarkOwnedModelId(def.ModelId);
+                            model = ProtoRegistry.RegisterModel(def.ModelId, sourceModel.PrefabPath);
+                        }
+                        catch (ArgumentException regEx)
+                        {
+                            // 兜底：万一仍有模型 ID 已被 CommonAPI 注册（其它 MOD 硬编码 ID），单条降级迁移。
+                            log.LogWarning("[PyPort] 建筑 item " + def.ItemId + " 的 model_id=" + def.ModelId +
+                                           " 注册冲突（" + regEx.Message + "），尝试自动改分配到空闲模型 ID");
+                            int newModelId = AllocateModelId();
+                            if (newModelId > 0)
+                            {
+                                usedModelIds.Remove(def.ModelId);
+                                def.ModelId = newModelId;
+                                if (!MarkModelId(newModelId, module.Id))
+                                {
+                                    continue;
+                                }
+                                LdbToolBindSkipFix.MarkOwnedModelId(newModelId);
+                                model = ProtoRegistry.RegisterModel(newModelId, sourceModel.PrefabPath);
+                                log.LogWarning("[PyPort] 建筑 item " + def.ItemId + " 的模型改分配为 " + newModelId);
+                            }
+                            else
+                            {
+                                log.LogError("[PyPort] 建筑 item " + def.ItemId + " 无空闲模型 ID 可迁移，跳过");
+                                continue;
+                            }
+                        }
                         if (model != null)
                         {
                             model.HpMax = sourceModel.HpMax;
@@ -160,12 +193,10 @@ namespace DSPPyPort.Core
                         string key = def.EffectiveKey;
                         int grid = def.GridIndex > 0 ? def.GridIndex : AllocateItemGrid();
                         def.GridIndex = grid;
-                        int buildIndex = def.BuildIndex > 0 ? def.BuildIndex : nextBuildIndex++;
-                        if (buildIndex < 100 || buildIndex > 999)
-                        {
-                            log.LogWarning("[PyPort] 建筑 item " + def.ItemId + " 的 build_index=" + buildIndex +
-                                           " 超出 100-999，建造栏位置可能异常");
-                        }
+                        // BuildIndex 自动分配（page1-9 / slot0-12）：原版 UIBuildMenu.StaticLoad 只收录
+                        // slot<=12、可见分类页 page1-9；旧 900+ 顺序分配会被丢弃/与原版建筑撞槽。
+                        int buildIndex = ResolveBuildIndex(def, module.Id);
+                        def.BuildIndex = buildIndex;
                         string iconPath = ResolveIconPath(def.IconFile, def.IconSource, false, "建筑 " + def.ItemId);
                         ItemProto item = ProtoRegistry.RegisterItem(
                             def.ItemId,
@@ -182,6 +213,7 @@ namespace DSPPyPort.Core
                             continue;
                         }
                         ProtoRegistry.AddModelToItemProto(model, item, new int[] { 1 }, buildIndex);
+                        buildingBuildIndexes[def.ItemId] = buildIndex;
                         item.PreTechOverride = def.PreTech;
                         if (def.RecipeType >= BuildingRecipeTypeMin && def.RecipeType <= BuildingRecipeTypeMax)
                         {
@@ -197,6 +229,7 @@ namespace DSPPyPort.Core
                             ExpectedItemId = def.ItemId,
                             ExpectedModelId = def.ModelId
                         });
+                        IconLoader.RegisterItem(def.ItemId, def.IconFile, def.IconSource, false);
                         AddBuildingTranslations(def);
                         ok++;
                     }

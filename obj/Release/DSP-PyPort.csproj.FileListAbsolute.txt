@@ -1,7 +1,0 @@
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.csproj.AssemblyReference.cache
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.GeneratedMSBuildEditorConfig.editorconfig
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.AssemblyInfoInputs.cache
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.AssemblyInfo.cs
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.csproj.CoreCompileInputs.cache
-C:\WorkWork\DSP MOD\DSP-PyPort\bin\Release\DSP-PyPort.dll
-C:\WorkWork\DSP MOD\DSP-PyPort\obj\Release\DSP-PyPort.dll

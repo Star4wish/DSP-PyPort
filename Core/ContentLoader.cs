@@ -21,6 +21,15 @@ namespace DSPPyPort.Core
 
         internal static LoadedContent LoadAll(string contentRoot, ManualLogSource log)
         {
+            return LoadAll(contentRoot, log, null);
+        }
+
+        /// <summary>
+        /// 加载内容。moduleGate(moduleId, manifestEnabled) 用于用户级分包开关（BepInEx 配置），
+        /// 返回 false 时整模块不读文件、不注册（用于降低启动时间）；null 表示完全按 manifest.enabled。
+        /// </summary>
+        internal static LoadedContent LoadAll(string contentRoot, ManualLogSource log, Func<string, bool, bool> moduleGate)
+        {
             LoadedContent content = new LoadedContent();
             content.Root = contentRoot;
 
@@ -82,11 +91,13 @@ namespace DSPPyPort.Core
                     continue;
                 }
                 string moduleName = moduleNode.Str("name", moduleId);
-                bool enabled = moduleNode.Bool("enabled", true);
-                if (!enabled)
+                bool manifestEnabled = moduleNode.Bool("enabled", true);
+                bool effectiveEnabled = moduleGate != null ? moduleGate(moduleId, manifestEnabled) : manifestEnabled;
+                if (!effectiveEnabled)
                 {
                     content.DisabledModules.Add(moduleId);
-                    log.LogInfo("[PyPort] 模块 " + moduleId + "（" + moduleName + "）在 manifest 中已禁用，跳过");
+                    log.LogInfo("[PyPort] 模块 " + moduleId + "（" + moduleName + "）已禁用，跳过" +
+                                (manifestEnabled ? "（配置关闭）" : "（manifest.enabled=false）"));
                     continue;
                 }
 
@@ -390,6 +401,7 @@ namespace DSPPyPort.Core
                 def.DescZh = row.Str("desc_zh", row.Str("desc", null));
                 def.IconFile = row.Str("icon_file", null);
                 def.IconSource = row.Str("icon_source", null);
+                def.Category = row.Str("category", null);
 
                 List<int> inputs = row.IntList("inputs");
                 List<int> inCounts = row.IntList("in_counts");

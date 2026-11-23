@@ -2,8 +2,14 @@
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -NoDeploy
+#   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -GameDir "D:\Steam\steamapps\common\Dyson Sphere Program"
+#   $env:DSP_GAME_DIR = "D:\...\Dyson Sphere Program"; .\build.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -ContentDir "C:\WorkWork\DSP MOD\_analysis\py-port\content"
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -ContentDir "..." -SkipIdCacheClean
+#
+# Game dir resolution order: -GameDir > env DSP_GAME_DIR > default Steam path.
+# Without -ContentDir the small schema sample under .\content is deployed (NOT the full PY content;
+# the full content bundle ships in GitHub Releases / dist zip).
 #
 # After deploying content it strips OUR OWN entries from LDBTool id caches
 #   BepInEx/config/LDBTool/LDBTool.CustomID.cfg / LDBTool.CustomGridIndex.cfg
@@ -18,7 +24,7 @@
 # NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads BOM-less files as ANSI,
 #       so non-ASCII comments can corrupt parsing when invoked with -File.
 param(
-    [string]$GameDir = 'C:\Games\Steam\steamapps\common\Dyson Sphere Program',
+    [string]$GameDir = '',
     [string]$Configuration = 'Release',
     [string]$ContentDir = '',
     [switch]$NoDeploy,
@@ -26,6 +32,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Game dir resolution: -GameDir > env DSP_GAME_DIR > default Steam path
+if ([string]::IsNullOrEmpty($GameDir)) {
+    if (-not [string]::IsNullOrEmpty($env:DSP_GAME_DIR)) {
+        $GameDir = $env:DSP_GAME_DIR
+    } else {
+        $GameDir = 'C:\Games\Steam\steamapps\common\Dyson Sphere Program'
+    }
+}
 
 $scriptPath = $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrEmpty($scriptPath)) { $scriptPath = $PSCommandPath }

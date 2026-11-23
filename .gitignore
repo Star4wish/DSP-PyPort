@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+bin/
+obj/
+*.user
+*.suo
+*.lock.json
+.vs/
+
+# ---------------------------------------------------------------------------
+# Runtime evidence / raw game logs (large + machine specific)
+# Keep curated excerpts under docs/ instead.
+# ---------------------------------------------------------------------------
+logs/
+*.log
+
+# Curated evidence exception: excerpts explicitly placed under docs/evidence/
+!docs/evidence/
+!docs/evidence/*.log
+!docs/evidence/*.txt
+
+# ---------------------------------------------------------------------------
+# Local deployment / packaged artifacts
+# Full content bundle (3876 files, ~26 MB zip) ships via GitHub Releases,
+# it is intentionally NOT tracked in this repository.
+# ---------------------------------------------------------------------------
+dist/
+*.zip
+deploy/
+
+# ---------------------------------------------------------------------------
+# OS / editor junk
+# ---------------------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
+
+# ---------------------------------------------------------------------------
+# Game installation copies (never commit game or mod binaries)
+# ---------------------------------------------------------------------------
+DSPGAME_Data/
+BepInEx/
+Dyson Sphere Program/

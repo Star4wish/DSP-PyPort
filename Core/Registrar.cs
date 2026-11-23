@@ -68,7 +68,7 @@ namespace DSPPyPort.Core
         private const int AutoMaterialGridStart = 4001;
         private const int AutoBuildingGridStart = 5001;
         private const int AutoBuildIndexStart = 900;
-        private const int AutoModelIdStart = 800;
+        private const int AutoModelIdStart = 686;
         private const int MaxModelArraySize = 2048;
 
         private readonly LoadedContent content;
@@ -95,6 +95,18 @@ namespace DSPPyPort.Core
         private readonly Dictionary<string, Translation> translations =
             new Dictionary<string, Translation>(StringComparer.Ordinal);
         private readonly HashSet<int> registeredItemIdList = new HashSet<int>();
+
+        /// <summary>
+        /// 已知其它 MOD 的模型号段（不依赖是否已加载，避免插件加载顺序导致撞号）：
+        ///   Molecular Assembly Hub 模型 666；Photon Stock Exchange 模型 667；DSP-MechDawn 模型 700-708。
+        /// 这些 MOD 的模型是硬编码 ID，且它们可能在我们之后才 Awake（此时 CommonAPI.models 里还看不到），
+        /// 所以必须作为「保留段」参与建筑模型段的安全检查（否则 LDB 会出现重复模型 ID）。
+        /// </summary>
+        private static readonly HashSet<int> ReservedModelIds = new HashSet<int>(
+            new int[] { 666, 667, 700, 701, 702, 703, 704, 705, 706, 707, 708 });
+
+        private static FieldInfo commonApiModelsField;
+        private bool buildingModelIdsChecked;
 
         // 物品栏格位分配（2026-11-17 重做）
         // GridIndex 语义（反编译 full.cs）：grid = tab*1000 + (row+1)*100 + (col+1)；
@@ -151,12 +163,19 @@ namespace DSPPyPort.Core
         private int lastMissingTechs = -1;
 
         internal Registrar(LoadedContent content, ManualLogSource log, string contentRoot)
+            : this(content, log, contentRoot, true)
+        {
+        }
+
+        internal Registrar(LoadedContent content, ManualLogSource log, string contentRoot, bool autoBuildIndexMode)
         {
             this.content = content;
             this.log = log;
             this.contentRoot = contentRoot;
+            this.autoBuildIndex = autoBuildIndexMode;
             ReportOccupiedIdsBeforeRegistration();
             InitItemGridAllocation();
+            InitBuildIndexAllocation();
         }
 
         // ================================================================== entry
@@ -173,14 +192,90 @@ namespace DSPPyPort.Core
                 }
             }
             log.LogInfo("[PyPort] 开始注册原型（模块 " + DescribeModules() + "）");
+            Perf.Mark(log, "注册准备（manifest/冲突扫描/格位扫描）");
             RegisterItems();
+            Perf.Mark(log, "物品注册");
             RegisterBuildings();
             FinalizeGridAllocation();
+            Perf.Mark(log, "建筑注册 + 格位定稿");
+            LogBuildIndexSummary();
             RegisterRecipes();
+            Perf.Mark(log, "配方注册");
             RegisterTechs();
+            Perf.Mark(log, "科技注册");
             RegisterLocalization();
+            Perf.Mark(log, "本地化注册");
             CleanupIconDescs();
+            Perf.Mark(log, "图标描述清理");
+            try
+            {
+                EnsureModelArrayCapacity();
+            }
+            catch (Exception ex)
+            {
+                log.LogError("[PyPort] 预扩容 LDB.models.modelArray 失败（CommonAPI Preload 可能越界）：" + ex);
+            }
             LogSummary();
+        }
+
+        /// <summary>
+        /// 预扩容 `LDB.models.modelArray`（CommonAPI Preload 之前的保险，2026-11-18 实测 bug）。
+        ///
+        /// CommonAPI 1.6.7 的 OnPostAdd 模型循环里：`if (model.ID > LDB.models.modelArray.Length)
+        /// Array.Resize(ref modelArray, model.ID + 64);` —— 条件是 `&gt;` 而不是 `&gt;=`，
+        /// 当模型 ID 恰好等于数组长度（初始 664+64=728）时不会扩容，随后 `modelArray[ID] = model` 越界，
+        /// 导致整个 OnPostAdd 中断（本次 720-737 的内容在 ID=728 处触发）。
+        ///
+        /// 这里在本插件注册完成后、CommonAPI Preload 之前，把 modelArray 主动扩到 `maxModelID + 64`，
+        /// 覆盖所有本 MOD 模型；其它 MOD 的模型仍由 CommonAPI 自身逻辑处理（它们 ID 较小时不受影响）。
+        /// </summary>
+        private void EnsureModelArrayCapacity()
+        {
+            if (LDB.models == null)
+            {
+                return;
+            }
+            int maxId = 0;
+            for (int i = 0; i < buildings.Count; i++)
+            {
+                RegisteredBuilding building = buildings[i];
+                if (building.ExpectedModelId > maxId)
+                {
+                    maxId = building.ExpectedModelId;
+                }
+                if (building.Def != null && building.Def.ModelId > maxId)
+                {
+                    maxId = building.Def.ModelId;
+                }
+            }
+            foreach (int id in usedModelIds)
+            {
+                if (id > maxId)
+                {
+                    maxId = id;
+                }
+            }
+            if (maxId <= 0)
+            {
+                return;
+            }
+            int required = maxId + 64;
+            ModelProto[] current = LDB.models.modelArray;
+            int currentLength = current != null ? current.Length : 0;
+            if (currentLength >= required)
+            {
+                log.LogInfo("[兼容] LDB.models.modelArray 容量足够：length=" + currentLength + "，最大模型 ID=" + maxId);
+                return;
+            }
+            ModelProto[] expanded = new ModelProto[required];
+            if (current != null)
+            {
+                Array.Copy(current, expanded, Math.Min(current.Length, expanded.Length));
+            }
+            LDB.models.modelArray = expanded;
+            log.LogInfo(string.Format(
+                "[兼容] 已预扩容 LDB.models.modelArray：{0} → {2}（最大模型 ID={1}，避开 CommonAPI `ID > Length` 的 off-by-one 越界）",
+                currentLength, maxId, required));
         }
 
         private string DescribeModules()
@@ -278,7 +373,8 @@ namespace DSPPyPort.Core
             conflicts += CheckPlannedIds("物品", plannedItems, LDB.items != null ? LDB.items.dataArray : null).Count;
             conflicts += CheckPlannedIds("配方", plannedRecipes, LDB.recipes != null ? LDB.recipes.dataArray : null).Count;
             conflicts += CheckPlannedIds("模型", plannedModels, LDB.models != null ? LDB.models.dataArray : null).Count;
-            List<int> techConflicts = CheckPlannedIds("科技", plannedTechs, LDB.techs != null ? LDB.techs.dataArray : null);
+            List<int> techConflicts = CheckPlannedIds("科技", FilterTechSlotsToReplace(plannedTechs),
+                LDB.techs != null ? LDB.techs.dataArray : null);
             conflicts += techConflicts.Count;
 
             log.LogInfo("[冲突检查] 内容计划段：物品 " + DescribePlannedRange(plannedItems) +
@@ -931,7 +1027,7 @@ namespace DSPPyPort.Core
 
         private bool MarkTechId(int id, string moduleId)
         {
-            if (preOccupiedTechs.Contains(id))
+            if (preOccupiedTechs.Contains(id) && !IsTechSlotToReplace(id))
             {
                 log.LogError("[PyPort] 科技 ID " + id + " 与原版/其它 MOD 冲突，跳过；内容 ID 需要迁移");
                 skippedInvalid++;
@@ -950,14 +1046,149 @@ namespace DSPPyPort.Core
         {
             for (int id = nextModelId; id < MaxModelArraySize; id++)
             {
-                if (!usedModelIds.Contains(id) && !preOccupiedModels.Contains(id))
+                if (!usedModelIds.Contains(id) && !preOccupiedModels.Contains(id) &&
+                    !ReservedModelIds.Contains(id) && !IsCommonApiModelIdTaken(id))
                 {
                     nextModelId = id + 1;
                     return id;
                 }
             }
-            log.LogError("[PyPort] 模型 ID 800-" + (MaxModelArraySize - 1) + " 段已用尽");
+            log.LogError("[PyPort] 模型 ID 安全段已用尽");
             return 0;
+        }
+
+        /// <summary>
+        /// 建筑模型 ID 安全性检查：若内容包模型段与「原版已占 / 已知 MOD 保留段 / 其它 MOD 已注册」冲突，
+        /// 把**整段**确定性迁移到第一个空闲连续块（只改运行期模型 ID：buildings.json 的 model_id 不被其它
+        /// JSON 引用，迁移后仍一一对应）。这样即使 content 侧选段不当也不会产生 LDB 重复模型 ID /
+        /// 建筑注册失败（本机实测 content 666-683 与 MolecularHub(666)/PhotonStockExchange(667) 冲突）。
+        /// </summary>
+        private void EnsureSafeBuildingModelIds()
+        {
+            if (buildingModelIdsChecked)
+            {
+                return;
+            }
+            buildingModelIdsChecked = true;
+
+            List<BuildingDef> defs = new List<BuildingDef>();
+            for (int m = 0; m < content.Modules.Count; m++)
+            {
+                ModuleContent module = content.Modules[m];
+                if (module.Refused)
+                {
+                    continue;
+                }
+                for (int i = 0; i < module.Buildings.Count; i++)
+                {
+                    BuildingDef def = module.Buildings[i];
+                    if (!def.Skip && def.ModelId > 0)
+                    {
+                        defs.Add(def);
+                    }
+                }
+            }
+            if (defs.Count == 0)
+            {
+                return;
+            }
+            List<string> reasons = new List<string>();
+            for (int i = 0; i < defs.Count; i++)
+            {
+                int id = defs[i].ModelId;
+                if (preOccupiedModels.Contains(id))
+                {
+                    reasons.Add(id + "（原版 LDB 已占）");
+                }
+                else if (ReservedModelIds.Contains(id))
+                {
+                    reasons.Add(id + "（已知 MOD 保留段）");
+                }
+                else if (IsCommonApiModelIdTaken(id))
+                {
+                    reasons.Add(id + "（其它 MOD 已注册）");
+                }
+            }
+            if (reasons.Count == 0)
+            {
+                return;
+            }
+
+            int minId = int.MaxValue;
+            int maxId = int.MinValue;
+            for (int i = 0; i < defs.Count; i++)
+            {
+                if (defs[i].ModelId < minId) minId = defs[i].ModelId;
+                if (defs[i].ModelId > maxId) maxId = defs[i].ModelId;
+            }
+            int count = defs.Count;
+            int baseId = -1;
+            for (int candidate = 666; candidate + count - 1 < MaxModelArraySize; candidate++)
+            {
+                bool ok = true;
+                for (int k = 0; k < count; k++)
+                {
+                    int id = candidate + k;
+                    if (preOccupiedModels.Contains(id) || ReservedModelIds.Contains(id) || IsCommonApiModelIdTaken(id))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok)
+                {
+                    baseId = candidate;
+                    break;
+                }
+            }
+            if (baseId < 0)
+            {
+                log.LogError("[PyPort] 找不到可容纳 " + count + " 个建筑模型的连续空闲模型段；模型冲突会导致注册失败");
+                return;
+            }
+            int delta = baseId - minId;
+            for (int i = 0; i < defs.Count; i++)
+            {
+                defs[i].ModelId += delta;
+            }
+            log.LogWarning(string.Format(
+                "[PyPort] 建筑模型 ID 段与已有占用冲突（{0}）；为避免 LDB 重复模型 ID，整段确定性迁移 {1}-{2} → {3}-{4}" +
+                "（模型 ID 仅被模型自身使用，buildings.json 不被其它数据引用；内容侧仍建议把模型段改到安全区）",
+                string.Join("、", reasons.ToArray()), minId, maxId, baseId, baseId + count - 1));
+            int capacity = (LDB.models != null ? LDB.models.dataArray.Length : 0) + 64;
+            if (baseId + count > capacity)
+            {
+                log.LogWarning("[PyPort] 迁移后最大模型 ID=" + (baseId + count - 1) +
+                               " 超过原版容量 " + capacity + "（SkillSystemCtorFix/PrefabDescArrayFix 会兜底，但建议内容侧选更低段）");
+            }
+        }
+
+        /// <summary>CommonAPI 的模型注册表（internal static Dictionary&lt;int, ModelProto&gt;）里是否已有该 ID。</summary>
+        private static bool IsCommonApiModelIdTaken(int modelId)
+        {
+            try
+            {
+                if (commonApiModelsField == null)
+                {
+                    commonApiModelsField = typeof(ProtoRegistry).GetField(
+                        "models", BindingFlags.NonPublic | BindingFlags.Static);
+                }
+                if (commonApiModelsField == null)
+                {
+                    return false;
+                }
+                object dict = commonApiModelsField.GetValue(null);
+                if (dict == null)
+                {
+                    return false;
+                }
+                MethodInfo contains = dict.GetType().GetMethod("ContainsKey", new Type[] { typeof(int) });
+                return contains != null && (bool)contains.Invoke(dict, new object[] { modelId });
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // ================================================================== translation helpers
@@ -997,17 +1228,12 @@ namespace DSPPyPort.Core
 
         private string ResolveIconPath(string iconFile, string iconSource, bool fluid, string label)
         {
-            if (!string.IsNullOrEmpty(iconSource))
+            // 图标路径策略统一由 IconLoader 决定（懒加载模式下返回空串，避免 Preload 提前加载原版图标）。
+            if (!IconLoader.LazyMode && string.IsNullOrEmpty(iconFile) && string.IsNullOrEmpty(iconSource))
             {
-                return iconSource;
+                missingIconFallbacks++;
             }
-            if (!string.IsNullOrEmpty(iconFile))
-            {
-                // 有自定义 PNG：先给原版近似图标兜底，onLoadingFinished 阶段由 IconLoader 反射覆盖。
-                return fluid ? "Icons/ItemRecipe/sulphuric-acid" : "Icons/ItemRecipe/iron-ore";
-            }
-            missingIconFallbacks++;
-            return fluid ? "Icons/ItemRecipe/sulphuric-acid" : "Icons/ItemRecipe/iron-ore";
+            return IconLoader.ItemOrTechIconPath(iconFile, iconSource, fluid);
         }
 
         // ================================================================== summary
@@ -1015,7 +1241,7 @@ namespace DSPPyPort.Core
         {
             log.LogInfo(string.Format(
                 "[PyPort] 注册汇总：物品 {0}（液体 {1}）/ 建筑 {2} / 配方 {3}（宽配方 {4}）/ 科技 {5} / 本地化 {6} 条 / 无效跳过 {7} 条 / 生成器标记跳过降级 {8} 条",
-                items.Count, fluidCount, buildings.Count, recipes.Count, wideRecipeCount, techs.Count,
+                items.Count, fluidCount, buildings.Count, recipes.Count, wideRecipeCount, techs.Count + replacedTechs.Count,
                 localeCount, skippedInvalid + mappedCount, skippedGenerator));
 
             for (int m = 0; m < content.Modules.Count; m++)
@@ -1030,6 +1256,7 @@ namespace DSPPyPort.Core
                 for (int i = 0; i < buildings.Count; i++) if (buildings[i].Def.ModuleId == module.Id) mb++;
                 for (int i = 0; i < recipes.Count; i++) if (recipes[i].Def.ModuleId == module.Id) mr++;
                 for (int i = 0; i < techs.Count; i++) if (techs[i].Def.ModuleId == module.Id) mt++;
+                for (int i = 0; i < replacedTechs.Count; i++) if (replacedTechs[i].Def.ModuleId == module.Id) mt++;
                 for (int i = 0; i < module.Items.Count; i++) if (module.Items[i].Skip) ms++;
                 for (int i = 0; i < module.Buildings.Count; i++) if (module.Buildings[i].Skip) ms++;
                 for (int i = 0; i < module.Recipes.Count; i++) if (module.Recipes[i].Skip) ms++;
@@ -1077,6 +1304,7 @@ namespace DSPPyPort.Core
         {
             List<int> list = new List<int>();
             for (int i = 0; i < techs.Count; i++) list.Add(techs[i].ExpectedId);
+            for (int i = 0; i < replacedTechs.Count; i++) list.Add(replacedTechs[i].ExpectedId);
             return list;
         }
 

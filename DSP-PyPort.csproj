@@ -5,9 +5,14 @@
     <AssemblyName>DSP-PyPort</AssemblyName>
     <RootNamespace>DSPPyPort</RootNamespace>
 
-    <Version>0.1.0</Version>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
-    <FileVersion>0.1.0.0</FileVersion>
+    <Version>0.9.3</Version>
+    <AssemblyVersion>0.9.3.0</AssemblyVersion>
+    <FileVersion>0.9.3.0</FileVersion>
+    <Authors>Star4wish</Authors>
+    <Product>DSP-PyPort</Product>
+    <Description>Pyanodons (Factorio) content port for Dyson Sphere Program (BepInEx plugin).</Description>
+    <RepositoryUrl>https://github.com/Star4wish/DSP-PyPort</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
 
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
@@ -21,8 +26,10 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- 游戏目录：命令行 -p:DSPGameDir=... 优先；否则探测本机 Steam 库常见位置 -->
+    <!-- 游戏目录：-p:DSPGameDir=... 优先；其次环境变量 DSP_GAME_DIR；否则探测 Steam 常见安装位置 -->
+    <DSPGameDir Condition="'$(DSPGameDir)' == '' AND '$(DSP_GAME_DIR)' != ''">$(DSP_GAME_DIR)</DSPGameDir>
     <DSPGameDir Condition="'$(DSPGameDir)' == '' AND Exists('C:\Games\Steam\steamapps\common\Dyson Sphere Program\DSPGAME_Data\Managed')">C:\Games\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
+    <DSPGameDir Condition="'$(DSPGameDir)' == '' AND Exists('C:\Program Files (x86)\Steam\steamapps\common\Dyson Sphere Program\DSPGAME_Data\Managed')">C:\Program Files (x86)\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
     <DSPGameDir Condition="'$(DSPGameDir)' == '' AND Exists('D:\Steam\steamapps\common\Dyson Sphere Program\DSPGAME_Data\Managed')">D:\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
     <DSPGameDir Condition="'$(DSPGameDir)' == ''">C:\Games\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
     <DSPManagedDir>$(DSPGameDir)\DSPGAME_Data\Managed</DSPManagedDir>
@@ -54,6 +61,22 @@
     </Reference>
     <Reference Include="UnityEngine.ImageConversionModule">
       <HintPath>$(DSPManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(DSPManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(DSPManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(DSPManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(DSPManagedDir)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
