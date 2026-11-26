@@ -5,8 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 **当前版本：v0.9.3**（科技树主页已由 PY 科技完整接管）
 
-> English quick start: see [English](#english) at the bottom. Full content bundle is distributed via
-> **GitHub Releases** (this repository only tracks the plugin source and a small content schema sample).
+> English quick start: see [English](#english) at the bottom. The full PY content bundle is tracked as a single
+> `assets/DSP-PyPort-content-*.zip` (build.ps1 auto-extracts it); ready-to-install bundles are also attached to
+> **GitHub Releases**.
 
 ---
 
@@ -53,8 +54,12 @@ Nebula 多人 API 等。与其它内容 MOD 共存时若 ID 冲突，日志会�
 
 ## 4. 从源码构建
 
-仓库**不包含**完整内容包（`content/` 下只是 8 个文件的 schema 样例）和内容生成管线；
-完整 `content/` 见 Releases 或 `dist/` 产物。
+**编译本身不需要 `content/`（图标/数据只在运行时读取）**，只需本机安装游戏 + BepInEx + CommonAPI + LDBTool
+提供引用程序集（`DSP-PyPort.csproj` 通过 `HintPath` 引用，不复制、不随仓库分发）。
+
+仓库以**一个压缩包** `assets/DSP-PyPort-content-<版本>.zip`（约 25 MB，内含 3876 个内容文件）附带完整 PY 内容；
+`content/` 目录本身只跟踪 8 个 schema 样例文本，避免仓库里出现数千个小文件。
+内容生成管线（Factorio 数据提取 + `convert_py2dsp.py`）不在本仓库范围内。
 
 ```powershell
 # 1) 需要 .NET SDK 6+（目标框架 net472，通过 NuGet 引用参考程序集）
@@ -64,15 +69,28 @@ Nebula 多人 API 等。与其它内容 MOD 共存时若 ID 冲突，日志会�
 #    - 自动探测 Steam 常见安装位置
 dotnet build .\DSP-PyPort.csproj -c Release -p:DSPGameDir="D:\Steam\steamapps\common\Dyson Sphere Program"
 
-# 或使用构建脚本：编译 + 部署 DLL + 内容 + 清理本 MOD 的 LDBTool ID 缓存
+# 编译 + 部署：默认自动解压 assets 内容包到 build\content 并部署
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+
+# 使用自己准备的完整内容目录 / 指定压缩包
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -ContentDir "D:\path\to\full\content"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -ContentZip "D:\path\to\content.zip"
+
+# 只编译不部署
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -NoDeploy
+
+# 维护者：内容更新后重新打包 assets 归档（保证 assets 内只留一个内容 zip）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\pack-content.ps1
 ```
 
 构建要点：
 
 - 游戏 DLL（`Assembly-CSharp` / `UnityEngine.*`）与 `BepInEx`、`CommonAPI`、`LDBTool` 均为**引用不复制**（`Private=false`），
   本仓库不附带任何第三方二进制。
+- 内容解析顺序：`-ContentDir` > `-ContentZip` > `assets/*.zip`（解压到 `build\content`，已 gitignore）> `.\content` 样例。
+- 编译前置检查：`build.ps1` 会先检查游戏程序集、BepInEx、CommonAPI、LDBTool 是否存在并给出明确报错；
+  `DSP-PyPort.csproj` 对 CommonAPI/LDBTool 的安装目录名做了多种布局探测（`CommonAPI-CommonAPI/`、`CommonAPI/`、
+  plugins 根目录等），安装器不同也不会找不到引用。
 - `build.ps1` 部署时会清理 LDBTool 缓存中**只属于本 MOD** 的 ID/GridIndex 条目：
   LDBTool 3.0.3 的 `ConfigFile` 是 `saveOnConfigSet:true`，且会用缓存值覆盖 proto.ID；
   清掉后内容 JSON 是唯一 ID 来源（其它 MOD 的缓存不动）。
@@ -131,9 +149,14 @@ DSP-PyPort/
 │  ├─ IconSetAtlasFix.cs         # IconSet 图集注入
 │  ├─ BuildBarIntegration.cs     # BuildBarTool 第二排绑定
 │  └─ *Fix.cs                    # LDBTool/PrefabDesc/SkillSystem/Sandbox 等兼容补丁
-├─ build.ps1                     # 编译 + 部署 + 清 LDBTool 缓存
-├─ tools/clean-ldbtool-cache.ps1
-├─ content/                      # 仅 schema 样例（真实内容见 Releases）
+├─ build.ps1                     # 编译 + 解压内容归档 + 部署 + 清 LDBTool 缓存
+├─ tools/
+│  ├─ clean-ldbtool-cache.ps1    # 只清理本 MOD 的 LDBTool ID/GridIndex 缓存
+│  └─ pack-content.ps1           # 维护者：把完整内容打成单个 assets/*.zip
+├─ assets/
+│  └─ DSP-PyPort-content-*.zip   # 完整 PY 内容（单归档，约 25 MB / 3876 文件，供构建自动解压）
+├─ content/                      # 仅 8 文件 schema 样例（真实内容在 assets 归档 / Release）
+├─ build/content/                # 构建时自动解压的内容（gitignore）
 ├─ README-交付说明.md            # 详细开发/验收记录（中文，76 KB）
 ├─ CHANGELOG.md
 ├─ NOTICE.md                     # 第三方内容与许可声明
@@ -164,6 +187,8 @@ DSP-PyPort/
 - **Install**: grab the content bundle from [Releases](https://github.com/Star4wish/DSP-PyPort/releases), unzip `DSP-PyPort/` into
   `<GameDir>\BepInEx\plugins\`.
 - **Build from source**: `dotnet build DSP-PyPort.csproj -c Release -p:DSPGameDir="<game dir>"`.
-  This repo ships source only + a tiny content schema sample; the full generated content bundle is in Releases.
+  The repo ships the full generated content as a single `assets/DSP-PyPort-content-*.zip`
+  (`build.ps1` extracts it automatically); `content/` only tracks a tiny schema sample.
+  Ready-to-install bundles are attached to [Releases](https://github.com/Star4wish/DSP-PyPort/releases).
 - **New save recommended**: PY techs reuse vanilla main-page tech IDs, so old saves' tech progress will be remapped.
 - **License**: code MIT; Pyanodons content/graphics belong to their authors (see [NOTICE.md](NOTICE.md)).

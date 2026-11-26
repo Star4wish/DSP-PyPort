@@ -7,7 +7,7 @@
 
 | 来源 | 用途 | 说明 |
 |---|---|---|
-| **Pyanodons（PY）模组包**（Factorio） | PY 配方/物品/科技数据、图标 PNG | 版权归 Pyanodons 团队所有。本 MOD 的 `content/` 内容包由 PY 模组的公开数据与图形资源转换而来；**仓库不直接跟踪**这些素材（仅保留 8 个文件的 schema 样例），完整内容包以 Releases 形式分发。若版权方有异议，可移除对应发布包。 |
+| **Pyanodons（PY）模组包**（Factorio） | PY 配方/物品/科技数据、图标 PNG | 版权归 Pyanodons 团队所有。本 MOD 的内容包由 PY 模组的公开数据与图形资源转换而来：仓库以**单个压缩包** `assets/DSP-PyPort-content-*.zip` 附带（便于从源码构建），`content/` 目录仅保留 8 个 schema 样例；完整可安装版本同时通过 Releases 分发。若版权方有异议，可删除对应归档/发布包。 |
 | Dyson Sphere Program / Youthcat Studio | 运行时游戏数据与 API | 本仓库不包含任何游戏本体文件或反编译产物。 |
 
 ## 2. 运行时依赖（不随本仓库分发）

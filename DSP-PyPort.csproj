@@ -92,13 +92,27 @@
     </Reference>
   </ItemGroup>
 
-  <ItemGroup Condition="Exists('$(DSPPluginsDir)')">
+  <!-- 前置 MOD 程序集：不同安装器/版本的实际文件夹名可能不同（Thunderstore manager 会带作者前缀），
+       这里按常见布局逐个探测；全部找不到时给出明确的缺失提示（见 build.ps1 的依赖检查）。 -->
+  <PropertyGroup>
+    <CommonApiDll Condition="'$(CommonApiDll)' == '' AND Exists('$(DSPPluginsDir)\CommonAPI-CommonAPI\CommonAPI.dll')">$(DSPPluginsDir)\CommonAPI-CommonAPI\CommonAPI.dll</CommonApiDll>
+    <CommonApiDll Condition="'$(CommonApiDll)' == '' AND Exists('$(DSPPluginsDir)\CommonAPI\CommonAPI.dll')">$(DSPPluginsDir)\CommonAPI\CommonAPI.dll</CommonApiDll>
+    <CommonApiDll Condition="'$(CommonApiDll)' == '' AND Exists('$(DSPPluginsDir)\CommonAPI.dll')">$(DSPPluginsDir)\CommonAPI.dll</CommonApiDll>
+    <LdbToolDll Condition="'$(LdbToolDll)' == '' AND Exists('$(DSPPluginsDir)\xiaoye97-LDBTool\LDBTool.dll')">$(DSPPluginsDir)\xiaoye97-LDBTool\LDBTool.dll</LdbToolDll>
+    <LdbToolDll Condition="'$(LdbToolDll)' == '' AND Exists('$(DSPPluginsDir)\LDBTool\LDBTool.dll')">$(DSPPluginsDir)\LDBTool\LDBTool.dll</LdbToolDll>
+    <LdbToolDll Condition="'$(LdbToolDll)' == '' AND Exists('$(DSPPluginsDir)\LDBTool.dll')">$(DSPPluginsDir)\LDBTool.dll</LdbToolDll>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(CommonApiDll)' != ''">
     <Reference Include="CommonAPI">
-      <HintPath>$(DSPPluginsDir)\CommonAPI-CommonAPI\CommonAPI.dll</HintPath>
+      <HintPath>$(CommonApiDll)</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(LdbToolDll)' != ''">
     <Reference Include="LDBTool">
-      <HintPath>$(DSPPluginsDir)\xiaoye97-LDBTool\LDBTool.dll</HintPath>
+      <HintPath>$(LdbToolDll)</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

@@ -22,12 +22,18 @@ logs/
 
 # ---------------------------------------------------------------------------
 # Local deployment / packaged artifacts
-# Full content bundle (3876 files, ~26 MB zip) ships via GitHub Releases,
-# it is intentionally NOT tracked in this repository.
+# Full content bundle (3876 files) is tracked as ONE archive under assets/
+# (see assets/DSP-PyPort-content-*.zip); build.ps1 extracts it to build\content.
+# GitHub Releases / dist zip stay out of git.
 # ---------------------------------------------------------------------------
 dist/
 *.zip
 deploy/
+build/
+
+# ...except the single bundled content archive used by build.ps1
+!assets/
+!assets/*.zip
 
 # ---------------------------------------------------------------------------
 # OS / editor junk

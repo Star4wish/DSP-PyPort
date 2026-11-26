@@ -6,6 +6,10 @@
 ## [0.9.3] - 2026-11-24
 
 ### 新增
+- **仓库随附压缩内容包**：完整 PY 内容（3876 文件 / 61 json + 3805 png，原始 38 MB）打包为单个
+  `assets/DSP-PyPort-content-v0.9.3.zip`（约 25 MB），避免仓库出现数千个小文件；
+  `build.ps1` 新增自动解压（`-ContentDir` > `-ContentZip` > `assets/*.zip` > `content/` 样例）并部署，
+  新增 `tools/pack-content.ps1` 供内容更新后重新打包（保证 `assets/` 内只留一个归档）。
 - **科技替换模式（TechReplaceMode）**：PY 科技占用原版主页科技 ID（1–1999）并原位覆盖原版 `TechProto`，
   绕过 DSP 硬编码 `TechProto.page => ID >= 2000 ? 升级页 : 主页`。
   - 103 条原版主页科技原位替换 + 630 条空洞 ID 新增 = 733 条科技全部落在主页（page 0）。
@@ -20,7 +24,8 @@
 - **与 DSP-MechDawn 的配方 ID 冲突**：PY 生成器 p7 配方主段旧配置 7600–8199 的尾部（8001–8199）
   与 MechDawn 运行期配方段 8001–8213 重叠，导致 MechDawn 198 条配方注册失败、UXAssist 生产目录崩溃。
   p7 主段改为 7600–7999，199 条配方迁到 11400–11598；生成器新增主段/全局断言与一次性基线迁移。
-- `DSP-PyPort.csproj` 版本号 0.1.0 → 0.9.3；支持 `DSP_GAME_DIR` 环境变量与更多 Steam 默认路径。
+- `DSP-PyPort.csproj` 版本号 0.1.0 → 0.9.3；支持 `DSP_GAME_DIR` 环境变量与更多 Steam 默认路径；
+  CommonAPI/LDBTool 引用支持多种安装目录布局，`build.ps1` 编译前先校验游戏/BepInEx/CommonAPI/LDBTool 依赖并给出明确报错。
 - `build.ps1` 支持 `-GameDir` / `DSP_GAME_DIR`，并在注释中说明默认只部署 schema 样例内容。
 
 ### 验证

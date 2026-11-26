@@ -8,8 +8,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1 -ContentDir "..." -SkipIdCacheClean
 #
 # Game dir resolution order: -GameDir > env DSP_GAME_DIR > default Steam path.
-# Without -ContentDir the small schema sample under .\content is deployed (NOT the full PY content;
-# the full content bundle ships in GitHub Releases / dist zip).
+# Content resolution order: -ContentDir > -ContentZip > assets/*content*.zip (auto-extract to build\content)
+#                          > .\content (8-file schema sample).
+# The full PY content bundle is a single assets/*.zip in the repo; only 8 sample files are tracked as text.
 #
 # After deploying content it strips OUR OWN entries from LDBTool id caches
 #   BepInEx/config/LDBTool/LDBTool.CustomID.cfg / LDBTool.CustomGridIndex.cfg
@@ -27,6 +28,7 @@ param(
     [string]$GameDir = '',
     [string]$Configuration = 'Release',
     [string]$ContentDir = '',
+    [string]$ContentZip = '',
     [switch]$NoDeploy,
     [switch]$SkipIdCacheClean
 )
@@ -42,6 +44,18 @@ if ([string]::IsNullOrEmpty($GameDir)) {
     }
 }
 
+function Expand-ContentArchive([string]$ZipPath, [string]$TargetDir) {
+    if (-not (Test-Path $ZipPath)) { throw "content archive not found: $ZipPath" }
+    if (Test-Path $TargetDir) { Remove-Item $TargetDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Write-Host "[content] extracting: $ZipPath -> $TargetDir"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $TargetDir)
+    if (-not (Test-Path (Join-Path $TargetDir 'manifest.json'))) {
+        throw "content archive has no manifest.json at root: $ZipPath"
+    }
+}
+
 $scriptPath = $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrEmpty($scriptPath)) { $scriptPath = $PSCommandPath }
 $root = if ([string]::IsNullOrEmpty($scriptPath)) { (Get-Location).Path } else { Split-Path -Parent $scriptPath }
@@ -51,6 +65,37 @@ $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
 $env:MSBUILDDISABLENODEREUSE = '1'
+
+# --- pre-build dependency check: fail with an actionable message instead of cryptic CS0246 ---
+$managedDir = Join-Path $GameDir 'DSPGAME_Data\Managed'
+if (-not (Test-Path (Join-Path $managedDir 'Assembly-CSharp.dll'))) {
+    throw "game assemblies not found: $managedDir\Assembly-CSharp.dll (pass -GameDir or set DSP_GAME_DIR; DSP 0.10.35.x required)"
+}
+if (-not (Test-Path (Join-Path $GameDir 'BepInEx\core\BepInEx.dll'))) {
+    throw "BepInEx 5.4.x not found: $GameDir\BepInEx\core\BepInEx.dll"
+}
+$pluginsDir = Join-Path $GameDir 'BepInEx\plugins'
+$commonCandidates = @(
+    (Join-Path $pluginsDir 'CommonAPI-CommonAPI\CommonAPI.dll'),
+    (Join-Path $pluginsDir 'CommonAPI\CommonAPI.dll'),
+    (Join-Path $pluginsDir 'CommonAPI.dll')
+)
+$commonFound = $false
+foreach ($p in $commonCandidates) { if (Test-Path $p) { $commonFound = $true } }
+if (-not $commonFound) {
+    throw "CommonAPI.dll not found under $pluginsDir (install CommonAPI 1.6.7+)"
+}
+$ldbCandidates = @(
+    (Join-Path $pluginsDir 'xiaoye97-LDBTool\LDBTool.dll'),
+    (Join-Path $pluginsDir 'LDBTool\LDBTool.dll'),
+    (Join-Path $pluginsDir 'LDBTool.dll')
+)
+$ldbFound = $false
+foreach ($p in $ldbCandidates) { if (Test-Path $p) { $ldbFound = $true } }
+if (-not $ldbFound) {
+    throw "LDBTool.dll not found under $pluginsDir (install LDBTool 3.0.3+)"
+}
+Write-Host "[build] deps ok: $GameDir"
 
 $project = Join-Path $root 'DSP-PyPort.csproj'
 $outDir = Join-Path $root ('bin\' + $Configuration)
@@ -81,8 +126,37 @@ try {
     throw "deploy dll failed (is the game running? stop it first): $_"
 }
 
-$srcContent = if ([string]::IsNullOrEmpty($ContentDir)) { Join-Path $root 'content' } else { $ContentDir }
+# Content resolution: -ContentDir > -ContentZip > assets/*content*.zip > .\content (schema sample)
+# The full PY content bundle ships in the repo as a single assets/*.zip so that a fresh clone can
+# build a playable install without uploading thousands of tiny files; it is extracted to build\content.
+$srcContent = ''
+if (-not [string]::IsNullOrEmpty($ContentDir)) {
+    $srcContent = $ContentDir
+} else {
+    $zipPath = $ContentZip
+    $zipExplicit = -not [string]::IsNullOrEmpty($ContentZip)
+    if ([string]::IsNullOrEmpty($zipPath)) {
+        $assetsDir = Join-Path $root 'assets'
+        if (Test-Path $assetsDir) {
+            $candidates = @(Get-ChildItem $assetsDir -Filter '*.zip' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending)
+            if ($candidates.Count -gt 1) {
+                Write-Warning ("[content] multiple archives in assets\; using {0} (keep only one, see tools\pack-content.ps1)" -f $candidates[0].Name)
+            }
+            if ($candidates.Count -gt 0) { $zipPath = $candidates[0].FullName }
+        }
+    }
+    $fullContentMarker = Join-Path $root 'content\pyrawores\recipes.json'
+    if (-not [string]::IsNullOrEmpty($zipPath) -and ($zipExplicit -or -not (Test-Path $fullContentMarker))) {
+        $extractDir = Join-Path $root 'build\content'
+        Expand-ContentArchive $zipPath $extractDir
+        $srcContent = $extractDir
+    } else {
+        $srcContent = Join-Path $root 'content'
+    }
+}
 if (-not (Test-Path $srcContent)) { throw "content dir missing: $srcContent" }
+Write-Host "[content] source: $srcContent"
 
 $dstContent = Join-Path $pluginDst 'content'
 if (Test-Path $dstContent) { Remove-Item $dstContent -Recurse -Force }
